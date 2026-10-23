@@ -28,6 +28,8 @@ describe("classification", () => {
     ["infomaniak_list_mailboxes", { readOnlyHint: true, destructiveHint: false }],
     ["infomaniak_get_mailbox", { readOnlyHint: true, destructiveHint: false }],
     ["infomaniak_search_kdrive_files", { readOnlyHint: true, destructiveHint: false }],
+    ["infomaniak_download_kdrive_file", { readOnlyHint: true, destructiveHint: false }],
+    ["infomaniak_upload_kdrive_file", { readOnlyHint: false, destructiveHint: false, idempotentHint: false }],
     ["infomaniak_kchat_list_teams", { readOnlyHint: true, destructiveHint: false }],
     ["infomaniak_create_mailbox", { readOnlyHint: false, destructiveHint: false, idempotentHint: false }],
     ["infomaniak_update_dns_record", { readOnlyHint: false, destructiveHint: false, idempotentHint: true }],

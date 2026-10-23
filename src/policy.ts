@@ -22,9 +22,9 @@ export interface Hints {
   openWorldHint: boolean;
 }
 
-const READ = new Set(["ping", "get", "list", "search"]);
+const READ = new Set(["ping", "get", "list", "search", "download"]);
 const DESTROY = new Set(["delete", "remove", "empty", "reboot", "shutdown"]);
-const CREATE = new Set(["create", "add", "renew", "share", "copy"]);
+const CREATE = new Set(["create", "add", "renew", "share", "copy", "upload"]);
 const CHANGE = new Set(["update", "boot", "move", "rename", "restore", "set"]);
 
 /** The verb of `infomaniak_list_mailboxes` is `list`; of `infomaniak_kchat_create_post`, `create`. */

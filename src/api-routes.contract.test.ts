@@ -31,7 +31,7 @@ interface Call {
   fn: string;
 }
 
-/** Every `this.request<...>('METHOD', `path`)` in the client, with its enclosing method name. */
+/** Every `this.request<...>('METHOD', `path`)` and `this.rawRequest('METHOD', `path`)` in the client, with its enclosing method name. */
 function clientCalls(): Call[] {
   const calls: Call[] = [];
   const fnRe = /async (\w+)\(/g;
@@ -39,7 +39,7 @@ function clientCalls(): Call[] {
   while ((m = fnRe.exec(clientSource))) {
     const end = clientSource.indexOf('\n  }\n', m.index);
     const body = clientSource.slice(m.index, end < 0 ? undefined : end);
-    const reqRe = /this\.request<[^(]*>\(\s*'(\w+)',\s*(`[^`]*`|path)/g;
+    const reqRe = /this\.(?:request<[^(]*>|rawRequest)\(\s*'(\w+)',\s*(`[^`]*`|path)/g;
     let r: RegExpExecArray | null;
     while ((r = reqRe.exec(body))) {
       const templates =

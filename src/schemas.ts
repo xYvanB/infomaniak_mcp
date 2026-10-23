@@ -274,6 +274,27 @@ export const KDriveFileVersionsSchema = z.object({
   file_id: z.number().positive(),
 });
 
+export const DownloadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  file_id: z.number().positive(),
+  max_chars: z.number().int().min(1).max(200_000).optional(),
+});
+
+export const UploadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  directory_id: z.number().positive().optional(),
+  file_name: z.string({ required_error: 'file_name is required' })
+    .min(1)
+    .max(255)
+    .refine((name) => !name.includes('/'), 'file_name must not contain "/"'),
+  content_text: z.string().optional(),
+  content_base64: z.string().optional(),
+  conflict: z.enum(['error', 'rename', 'version']).default('rename'),
+}).refine(
+  (v) => (v.content_text === undefined) !== (v.content_base64 === undefined),
+  'Provide exactly one of content_text or content_base64',
+);
+
 // kChat schemas
 export const KChatTeamIdSchema = z.object({
   team_id: z.string({ required_error: 'team_id is required' }).min(1),
