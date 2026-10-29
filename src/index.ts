@@ -14,6 +14,7 @@
  * - MCP_AUTH_TOKEN: Bearer token required on /mcp (required when MCP_HOST is not loopback)
  * - MCP_CORS_ORIGINS: Comma-separated list of allowed CORS origins (default: CORS disabled)
  * - MCP_STATELESS: Set to 'true' for stateless mode (default: false)
+ * - INFOMANIAK_READ_ONLY: Set to 'true' to offer and allow read-only tools only
  *
  * Get your API token from: https://manager.infomaniak.com/v3/ng/accounts/token/list
  */
@@ -22,6 +23,7 @@ import { InfomaniakClient } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
 import { startStdioServer } from "./transports/stdio.js";
 import { startHttpServer } from "./transports/http.js";
+import { readOnlyFromEnv } from "./policy.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.INFOMANIAK_API_TOKEN;
@@ -52,13 +54,14 @@ const corsOrigins = (process.env.MCP_CORS_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
+const readOnly = readOnlyFromEnv();
 
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(client, { port, host, stateless, authToken, corsOrigins }, kchatClient);
+    await startHttpServer(client, { port, host, stateless, authToken, corsOrigins, readOnly }, kchatClient);
   } else if (transport === "stdio") {
-    await startStdioServer(client, kchatClient);
+    await startStdioServer(client, kchatClient, { readOnly });
   } else {
     console.error(`Error: Unknown transport '${transport}'. Use 'stdio' or 'http'.`);
     process.exit(1);
