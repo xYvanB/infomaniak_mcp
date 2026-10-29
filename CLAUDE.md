@@ -48,7 +48,7 @@ npm run inspector    # Test with MCP Inspector (requires INFOMANIAK_API_TOKEN en
 ## Architecture
 
 ### MCP Server (`src/server.ts`)
-- Defines 96 tools organized by service category (domains, mail, hosting, kDrive, kChat, etc.)
+- Defines 104 tools organized by service category (domains, mail, hosting, kDrive, kChat, etc.), plus 3 optional IMAP tools in `src/imap-tools.ts`
 - Transport-agnostic: `src/transports/stdio.ts` (default) or `src/transports/http.ts`
 - Requires `INFOMANIAK_API_TOKEN` environment variable
 - Each tool maps to one or more `InfomaniakClient` methods
@@ -76,7 +76,7 @@ npm run inspector    # Test with MCP Inspector (requires INFOMANIAK_API_TOKEN en
 3. **DNS**: full CRUD for DNS records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 4. **Mail Services**: mail hostings, mailboxes (by name), aliases, forwarding, redirections, auto-replies, folders — `src/mail-tools.ts`
 5. **Web Hosting**: sites, PHP versions, databases
-6. **kDrive**: list and get kDrive details
+6. **kDrive**: drives, files (list with cursor paging, search, download, upload, move, copy, rename, share), trash, versions, activity, favorites
 7. **Swiss Backup**: backup products and slots
 8. **VPS**: list, get, reboot, shutdown, boot
 9. **Dedicated Servers**: list, get, reboot
@@ -99,7 +99,7 @@ npm run inspector    # Test with MCP Inspector (requires INFOMANIAK_API_TOKEN en
 
 ### API Endpoint Patterns
 
-- API version is in the path: `/1/` (v1) or `/2/` (v2 for kDrive)
+- API version is in the path: `/1/` (v1), `/2/` or `/3/` (kDrive mixes both: listings, search, details, moves and copies are on `/3/drive/...`)
 - Account-scoped endpoints: `/1/account/{account_id}/...`
 - Mail: `/1/mail_hostings/{mail_hosting_id}/mailboxes/{mailbox_name}/...` (mailboxes are addressed by name); hostings listed with `/1/products?service_name=email_hosting`
 - Other services: `/1/domain/`, `/1/web/`, etc. (not all are in the published OpenAPI document — see `src/api-routes.contract.test.ts`)

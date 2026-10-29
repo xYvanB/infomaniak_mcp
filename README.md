@@ -312,6 +312,25 @@ Message content is written by other people, and the tools say so in their output
 | `infomaniak_get_swiss_backup` | Get backup details |
 | `infomaniak_list_swiss_backup_slots` | List backup slots |
 
+### kDrive Files
+
+The kDrive routes follow Infomaniak's official kDrive MCP server and the published OpenAPI document. The root directory has id `1`.
+
+| Tool | Description |
+|------|-------------|
+| `infomaniak_list_kdrive_files` | List a directory (root by default); paginated with `cursor`/`limit`, filter with `type` (`file` or `dir`) |
+| `infomaniak_get_kdrive_file` | File or directory details |
+| `infomaniak_search_kdrive_files` | Search, optionally inside `directory_id` (`depth`: `unlimited` or `child`) |
+| `infomaniak_download_kdrive_file` | Read a file: text as text (50 000 chars by default, `max_chars` up to 200 000), other files up to 10 MB as an image or embedded resource |
+| `infomaniak_upload_kdrive_file` | Upload text (`content_text`) or base64 (`content_base64`), max 10 MB; `conflict`: `error`, `rename` (default) or `version` |
+| `infomaniak_create_kdrive_directory` | Create a directory |
+| `infomaniak_move_kdrive_file` / `infomaniak_copy_kdrive_file` / `infomaniak_rename_kdrive_file` | Move, copy, rename |
+| `infomaniak_delete_kdrive_file` | Delete a file or directory |
+| `infomaniak_share_kdrive_file` | Create a share link |
+| `infomaniak_list_kdrive_trash` / `infomaniak_restore_kdrive_file` / `infomaniak_empty_kdrive_trash` | Trash |
+| `infomaniak_list_kdrive_file_versions` / `infomaniak_get_kdrive_activity` | Versions and activity |
+| `infomaniak_list_kdrive_favorites` / `infomaniak_add_kdrive_favorite` / `infomaniak_remove_kdrive_favorite` | Favorites |
+
 ### Infrastructure
 
 | Tool | Description |
