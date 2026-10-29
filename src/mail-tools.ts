@@ -12,72 +12,76 @@
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { InfomaniakClient } from "./infomaniak-client.js";
-import { validate } from "./schemas.js";
+import { handler, id, input, notOnlyDots, ToolHandler, validate } from "./schemas.js";
 
 // ── schemas ──────────────────────────────────────────────────────────────────
 
-const mailHostingId = z.number({ required_error: "mail_hosting_id is required" }).int().positive();
-// The username part of an address: no "@", no "/", nothing that would leave
-// the path segment it is sent in.
+const mailHostingId = id("mail_hosting_id");
+// The username part of an address: no "@", no "/", and not "." or "..",
+// nothing that would leave the path segment it is sent in.
 const mailboxName = z
   .string({ required_error: "mailbox_name is required" })
   .min(1, "mailbox_name cannot be empty")
-  .regex(/^[A-Za-z0-9._+-]+$/, "mailbox_name is the part before the @ (letters, digits, . _ + -)");
+  .max(64, "mailbox_name is at most 64 characters")
+  .regex(/^[A-Za-z0-9._+-]+$/, "mailbox_name is the part before the @ (letters, digits, . _ + -)")
+  .refine(notOnlyDots, "mailbox_name cannot be only dots");
 const email = z.string().email();
 
-export const ListMailHostingsSchema = z.object({
-  account_id: z.number().int().positive().optional(),
+export const ListMailHostingsSchema = input({
+  account_id: id("account_id").optional(),
 });
 
-export const MailHostingIdSchema = z.object({ mail_hosting_id: mailHostingId });
+export const MailHostingIdSchema = input({ mail_hosting_id: mailHostingId });
 
-export const ListMailboxesSchema = z.object({
+export const ListMailboxesSchema = input({
   mail_hosting_id: mailHostingId,
   search: z.string().min(1).optional(),
   page: z.number().int().min(1).optional(),
   per_page: z.number().int().min(1).max(500).optional(),
 });
 
-export const MailboxNameSchema = z.object({
+export const MailboxNameSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
 });
 
-export const CreateMailboxSchema = z.object({
+export const CreateMailboxSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
-  note: z.string().optional(),
+  note: z.string().max(80).optional(),
   target: z.enum(["current_user", "ksuite_user", "other_user"]).optional(),
   link_to_current_user: z.boolean().optional(),
 });
 
-export const UpdateMailboxSchema = z.object({
+export const UpdateMailboxSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
-  note: z.string().optional(),
+  note: z.string().max(80).optional(),
   has_responder: z.boolean().optional(),
   has_move_spam: z.boolean().optional(),
   has_mail_filtering: z.boolean().optional(),
-  authorized_senders: z.array(z.string().min(1)).optional(),
-  blocked_senders: z.array(z.string().min(1)).optional(),
+  authorized_senders: z.array(z.string().min(1).max(512)).optional(),
+  blocked_senders: z.array(z.string().min(1).max(512)).optional(),
 });
 
-export const MailboxAliasSchema = z.object({
+export const MailboxAliasSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
   alias: z
     .string({ required_error: "alias is required" })
     .min(1, "alias cannot be empty")
-    .regex(/^[A-Za-z0-9._+-]+$/, "alias is the part before the @ (letters, digits, . _ + -)"),
+    .max(64, "alias is at most 64 characters")
+    .regex(/^[A-Za-z0-9._+-]+$/, "alias is the part before the @ (letters, digits, . _ + -)")
+    .refine(notOnlyDots, "alias cannot be only dots"),
 });
 
-export const AddMailboxForwardingSchema = z.object({
+export const AddMailboxForwardingSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
   redirect_address: email,
 });
 
-export const UpdateMailboxForwardingSchema = z.object({
+export const UpdateMailboxForwardingSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
   redirect_addresses: z.array(email).optional(),
@@ -86,20 +90,20 @@ export const UpdateMailboxForwardingSchema = z.object({
   has_forward_spam: z.boolean().optional(),
 });
 
-export const CreateRedirectionSchema = z.object({
+export const CreateRedirectionSchema = input({
   mail_hosting_id: mailHostingId,
   name: z.string({ required_error: "name is required" }).min(1),
-  targets: z.array(email).min(1, "at least one target address is required"),
+  targets: z.array(email.max(255)).min(1, "at least one target address is required"),
 });
 
-export const RedirectionIdSchema = z.object({
+export const RedirectionIdSchema = input({
   mail_hosting_id: mailHostingId,
-  redirection_id: z.string({ required_error: "redirection_id is required" }).min(1),
+  redirection_id: z.string({ required_error: "redirection_id is required" }).min(1).refine(notOnlyDots, "redirection_id cannot be only dots"),
 });
 
 const autoReplyFields = {
   name: z.string().min(1).optional(),
-  message: z.string().min(1).optional(),
+  message: z.string().min(1).max(65536).optional(),
   is_recurrent: z.boolean().optional(),
   started_at: z.number().int().optional(),
   ended_at: z.number().int().optional(),
@@ -107,10 +111,10 @@ const autoReplyFields = {
   is_visible: z.boolean().optional(),
 };
 
-export const CreateAutoReplySchema = z.object({
+export const CreateAutoReplySchema = input({
   mail_hosting_id: mailHostingId,
   name: z.string({ required_error: "name is required" }).min(1),
-  message: z.string({ required_error: "message is required" }).min(1),
+  message: z.string({ required_error: "message is required" }).min(1).max(65536),
   is_recurrent: z.boolean().default(false),
   started_at: autoReplyFields.started_at,
   ended_at: autoReplyFields.ended_at,
@@ -118,9 +122,9 @@ export const CreateAutoReplySchema = z.object({
   is_visible: autoReplyFields.is_visible,
 });
 
-export const AutoReplyIdSchema = z.object({
+export const AutoReplyIdSchema = input({
   mail_hosting_id: mailHostingId,
-  auto_reply_id: z.number({ required_error: "auto_reply_id is required" }).int().positive(),
+  auto_reply_id: id("auto_reply_id"),
 });
 
 export const UpdateAutoReplySchema = AutoReplyIdSchema.extend(autoReplyFields);
@@ -348,99 +352,49 @@ function withoutUndefined<T extends Record<string, unknown>>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, client: InfomaniakClient) => Promise<unknown>) =>
+  handler(schema, run);
+
+/** Each mail tool's input schema and what it does with the validated input. */
+export const mailHandlers: Record<string, ToolHandler<InfomaniakClient>> = {
+  infomaniak_list_mail_hostings: on(ListMailHostingsSchema, (v, client) => client.getMailHostings(v.account_id)),
+  infomaniak_list_mailboxes: on(ListMailboxesSchema, (v, client) =>
+    client.getMailboxes(v.mail_hosting_id, withoutUndefined({ search: v.search, page: v.page, per_page: v.per_page }))),
+  infomaniak_get_mailbox: on(MailboxNameSchema, (v, client) => client.getMailbox(v.mail_hosting_id, v.mailbox_name)),
+  infomaniak_create_mailbox: on(CreateMailboxSchema, ({ mail_hosting_id, mailbox_name, ...rest }, client) =>
+    client.createMailbox(mail_hosting_id, { mailbox_name, ...withoutUndefined(rest) })),
+  infomaniak_update_mailbox: on(UpdateMailboxSchema, ({ mail_hosting_id, mailbox_name, ...changes }, client) =>
+    client.updateMailbox(mail_hosting_id, mailbox_name, withoutUndefined(changes))),
+  infomaniak_delete_mailbox: on(MailboxNameSchema, (v, client) => client.deleteMailbox(v.mail_hosting_id, v.mailbox_name)),
+  infomaniak_list_mailbox_aliases: on(MailboxNameSchema, (v, client) => client.getMailboxAliases(v.mail_hosting_id, v.mailbox_name)),
+  infomaniak_add_mailbox_alias: on(MailboxAliasSchema, (v, client) => client.addMailboxAlias(v.mail_hosting_id, v.mailbox_name, v.alias)),
+  infomaniak_delete_mailbox_alias: on(MailboxAliasSchema, (v, client) => client.deleteMailboxAlias(v.mail_hosting_id, v.mailbox_name, v.alias)),
+  infomaniak_get_mailbox_forwarding: on(MailboxNameSchema, (v, client) => client.getMailboxForwarding(v.mail_hosting_id, v.mailbox_name)),
+  infomaniak_add_mailbox_forwarding: on(AddMailboxForwardingSchema, (v, client) =>
+    client.addMailboxForwarding(v.mail_hosting_id, v.mailbox_name, v.redirect_address)),
+  infomaniak_update_mailbox_forwarding: on(UpdateMailboxForwardingSchema, ({ mail_hosting_id, mailbox_name, ...changes }, client) =>
+    client.updateMailboxForwarding(mail_hosting_id, mailbox_name, withoutUndefined(changes))),
+  infomaniak_delete_mailbox_forwarding: on(MailboxNameSchema, (v, client) => client.deleteMailboxForwarding(v.mail_hosting_id, v.mailbox_name)),
+  infomaniak_list_email_redirections: on(MailHostingIdSchema, (v, client) => client.getRedirections(v.mail_hosting_id)),
+  infomaniak_create_email_redirection: on(CreateRedirectionSchema, (v, client) =>
+    client.createRedirection(v.mail_hosting_id, { name: v.name, targets: v.targets })),
+  infomaniak_delete_email_redirection: on(RedirectionIdSchema, (v, client) => client.deleteRedirection(v.mail_hosting_id, v.redirection_id)),
+  infomaniak_list_auto_replies: on(MailHostingIdSchema, (v, client) => client.getAutoReplies(v.mail_hosting_id)),
+  infomaniak_create_auto_reply: on(CreateAutoReplySchema, ({ mail_hosting_id, name, message, is_recurrent, ...rest }, client) =>
+    client.createAutoReply(mail_hosting_id, { name, message, is_recurrent, ...withoutUndefined(rest) })),
+  infomaniak_update_auto_reply: on(UpdateAutoReplySchema, ({ mail_hosting_id, auto_reply_id, ...changes }, client) =>
+    client.updateAutoReply(mail_hosting_id, auto_reply_id, withoutUndefined(changes))),
+  infomaniak_delete_auto_reply: on(AutoReplyIdSchema, (v, client) => client.deleteAutoReply(v.mail_hosting_id, v.auto_reply_id)),
+  infomaniak_list_mailbox_folders: on(MailboxNameSchema, (v, client) => client.getMailboxFolders(v.mail_hosting_id, v.mailbox_name)),
+};
+
+/** Validates `args` against the tool's schema, then runs it. */
 export async function handleMailTool(
   client: InfomaniakClient,
   name: string,
   args: Record<string, unknown> | undefined,
 ): Promise<unknown> {
-  switch (name) {
-    case "infomaniak_list_mail_hostings": {
-      const v = validate(ListMailHostingsSchema, args ?? {});
-      return client.getMailHostings(v.account_id);
-    }
-    case "infomaniak_list_mailboxes": {
-      const v = validate(ListMailboxesSchema, args);
-      return client.getMailboxes(v.mail_hosting_id, withoutUndefined({ search: v.search, page: v.page, per_page: v.per_page }));
-    }
-    case "infomaniak_get_mailbox": {
-      const v = validate(MailboxNameSchema, args);
-      return client.getMailbox(v.mail_hosting_id, v.mailbox_name);
-    }
-    case "infomaniak_create_mailbox": {
-      const v = validate(CreateMailboxSchema, args);
-      return client.createMailbox(v.mail_hosting_id, withoutUndefined({
-        mailbox_name: v.mailbox_name, note: v.note, target: v.target, link_to_current_user: v.link_to_current_user,
-      }) as { mailbox_name: string });
-    }
-    case "infomaniak_update_mailbox": {
-      const { mail_hosting_id, mailbox_name, ...changes } = validate(UpdateMailboxSchema, args);
-      return client.updateMailbox(mail_hosting_id, mailbox_name, withoutUndefined(changes));
-    }
-    case "infomaniak_delete_mailbox": {
-      const v = validate(MailboxNameSchema, args);
-      return client.deleteMailbox(v.mail_hosting_id, v.mailbox_name);
-    }
-    case "infomaniak_list_mailbox_aliases": {
-      const v = validate(MailboxNameSchema, args);
-      return client.getMailboxAliases(v.mail_hosting_id, v.mailbox_name);
-    }
-    case "infomaniak_add_mailbox_alias": {
-      const v = validate(MailboxAliasSchema, args);
-      return client.addMailboxAlias(v.mail_hosting_id, v.mailbox_name, v.alias);
-    }
-    case "infomaniak_delete_mailbox_alias": {
-      const v = validate(MailboxAliasSchema, args);
-      return client.deleteMailboxAlias(v.mail_hosting_id, v.mailbox_name, v.alias);
-    }
-    case "infomaniak_get_mailbox_forwarding": {
-      const v = validate(MailboxNameSchema, args);
-      return client.getMailboxForwarding(v.mail_hosting_id, v.mailbox_name);
-    }
-    case "infomaniak_add_mailbox_forwarding": {
-      const v = validate(AddMailboxForwardingSchema, args);
-      return client.addMailboxForwarding(v.mail_hosting_id, v.mailbox_name, v.redirect_address);
-    }
-    case "infomaniak_update_mailbox_forwarding": {
-      const { mail_hosting_id, mailbox_name, ...changes } = validate(UpdateMailboxForwardingSchema, args);
-      return client.updateMailboxForwarding(mail_hosting_id, mailbox_name, withoutUndefined(changes));
-    }
-    case "infomaniak_delete_mailbox_forwarding": {
-      const v = validate(MailboxNameSchema, args);
-      return client.deleteMailboxForwarding(v.mail_hosting_id, v.mailbox_name);
-    }
-    case "infomaniak_list_email_redirections": {
-      const v = validate(MailHostingIdSchema, args);
-      return client.getRedirections(v.mail_hosting_id);
-    }
-    case "infomaniak_create_email_redirection": {
-      const v = validate(CreateRedirectionSchema, args);
-      return client.createRedirection(v.mail_hosting_id, { name: v.name, targets: v.targets });
-    }
-    case "infomaniak_delete_email_redirection": {
-      const v = validate(RedirectionIdSchema, args);
-      return client.deleteRedirection(v.mail_hosting_id, v.redirection_id);
-    }
-    case "infomaniak_list_auto_replies": {
-      const v = validate(MailHostingIdSchema, args);
-      return client.getAutoReplies(v.mail_hosting_id);
-    }
-    case "infomaniak_create_auto_reply": {
-      const { mail_hosting_id, ...fields } = validate(CreateAutoReplySchema, args);
-      return client.createAutoReply(mail_hosting_id, withoutUndefined(fields) as { name: string; message: string; is_recurrent: boolean });
-    }
-    case "infomaniak_update_auto_reply": {
-      const { mail_hosting_id, auto_reply_id, ...changes } = validate(UpdateAutoReplySchema, args);
-      return client.updateAutoReply(mail_hosting_id, auto_reply_id, withoutUndefined(changes));
-    }
-    case "infomaniak_delete_auto_reply": {
-      const v = validate(AutoReplyIdSchema, args);
-      return client.deleteAutoReply(v.mail_hosting_id, v.auto_reply_id);
-    }
-    case "infomaniak_list_mailbox_folders": {
-      const v = validate(MailboxNameSchema, args);
-      return client.getMailboxFolders(v.mail_hosting_id, v.mailbox_name);
-    }
-    default:
-      throw new Error(`Unknown mail tool: ${name}`);
-  }
+  const tool = mailHandlers[name];
+  if (!tool) throw new Error(`Unknown mail tool: ${name}`);
+  return tool.run(validate(tool.schema, args ?? {}), client);
 }

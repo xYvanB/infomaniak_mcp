@@ -192,7 +192,9 @@ describe("names that would leave their path segment", () => {
 
   it("an alias is a name, not an address", () => {
     expect(() => validate(MailboxNameSchema, { mail_hosting_id: 100001, mailbox_name: "ok.name+tag" })).not.toThrow();
-    expect(() => validate(CreateMailboxSchema, { mail_hosting_id: 100001, mailbox_name: "info", password: "x" })).not.toThrow();
+    expect(() => validate(CreateMailboxSchema, { mail_hosting_id: 100001, mailbox_name: "info" })).not.toThrow();
+    // The password is set by the mailbox's user in the Manager: a key the tool does not take is refused, not dropped.
+    expect(() => validate(CreateMailboxSchema, { mail_hosting_id: 100001, mailbox_name: "info", password: "x" })).toThrow(/password/);
     expect(() => validate(CreateRedirectionSchema, { mail_hosting_id: 100001, name: "info", targets: [] })).toThrow(/target/);
   });
 

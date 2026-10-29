@@ -96,6 +96,7 @@ Add to your Claude Desktop configuration file:
 | `MCP_CORS_ORIGINS` | No | - | Comma-separated list of origins allowed by CORS (e.g. `https://app.example.com`). CORS is disabled when unset. `*` requires `MCP_AUTH_TOKEN` |
 | `MCP_STATELESS` | No | `false` | Set to `true` for stateless mode |
 | `INFOMANIAK_READ_ONLY` | No | `false` | Set to `true` to offer and allow read-only tools only (see Safety) |
+| `INFOMANIAK_CONFIRM` | No | `elicitation` | Who asks before a destructive or sensitive call: `elicitation` (the server asks, and refuses when it cannot) or `client` (the client's own prompt only). See Safety |
 | `INFOMANIAK_IMAP_USER` | No | - | Mailbox address to read over IMAP; without it the mail-reading tools are not offered |
 | `INFOMANIAK_IMAP_PASSWORD` | With a user | - | Its password (an app password if two-factor authentication is on) |
 | `INFOMANIAK_IMAP_PASSWORD_FILE` | Instead of the above | - | A file holding the password, so it does not sit in the MCP client's configuration |
@@ -103,10 +104,43 @@ Add to your Claude Desktop configuration file:
 
 ## 🛡️ Safety
 
+### What each tool may do
+
 Every tool carries MCP annotations: `readOnlyHint` for reads (`list_*`, `get_*`,
-`search_*`, `ping`), `destructiveHint` for what deletes, empties, reboots or
-shuts down, and for `infomaniak_api_call`, which can do anything the token can.
-Clients that honour annotations can ask before a destructive call.
+`search_*`, `download_*`, `ping`), `destructiveHint` for what deletes, empties,
+reboots or shuts down **and for what replaces existing values** (`update_*`,
+`move_*`, `rename_*`: in the MCP definition only purely additive tools are
+non-destructive), and for `infomaniak_api_call`, which can do anything the token can.
+
+### Approval before destructive and sensitive calls
+
+35 tools need a person to say yes on **every** call:
+
+- every destructive tool (`delete_*`, `update_*`, `move_*`, `rename_*`, `empty_kdrive_trash`, `reboot_*`, `shutdown_vps`, `kchat_delete_post`), except `remove_kdrive_favorite`;
+- additive tools whose effect leaves the account, costs money or runs code: `renew_domain`, `create_dns_record`, `create_cron_job`, `create_ftp_account`, `share_kdrive_file`, `add_mailbox_forwarding`, `create_email_redirection`, `kchat_create_post`;
+- `infomaniak_api_call`, whatever its method.
+
+Two layers enforce it:
+
+1. **The client's prompt.** These tools carry `_meta["anthropic/requiresUserInteraction"]: true`. Claude Code (v2.1.199 or later) then shows its permission prompt on every call, **also in `auto`, `acceptEdits` and `bypassPermissions` modes**; allow rules do not skip it and there is no "don't ask again".
+2. **The server's question** (default, `INFOMANIAK_CONFIRM=elicitation`). Before the call reaches the API, the server asks the person through MCP elicitation, showing the validated arguments (passwords hidden). Only an explicit yes lets the call run: a declined or dismissed dialog, a timeout (10 minutes), or a client that does not support elicitation refuses it, and nothing is sent. The model never sees the question, so it cannot answer for the person.
+
+With both layers a Claude Code user answers twice. `INFOMANIAK_CONFIRM=client` drops the server's question and relies on the client's prompt alone: use it with clients that honour `requiresUserInteraction` but cannot show an elicitation.
+
+What this cannot cover: a client configured to answer elicitations by itself (Claude Code's `Elicitation` hooks can), and the API token used outside this server. Give the token only the scopes you need, and start with `INFOMANIAK_READ_ONLY=true`.
+
+### Input validation
+
+Every call is validated once, before the approval and before the API, against
+the zod schema the tool's published `inputSchema` is derived from, so what a
+client is told and what the server accepts cannot drift apart:
+
+- a key the tool does not declare is an error, not silently dropped;
+- ids are positive integers;
+- what ends up in a URL path cannot leave its segment: domains must be domain names, kChat ids letters and digits, mailbox names and aliases the part before the `@` (never `.` or `..`, which the URL parser would resolve to the parent route); the clients URL-encode every segment and refuse `.` and `..`; `infomaniak_api_call` takes a plain path, without `..` (also as `%2e%2e`), query or fragment;
+- where a route is in Infomaniak's published OpenAPI document, the limits follow it (a share link is `public` or `password` and expires at a Unix timestamp; kDrive pages hold 5 to 1000 entries).
+
+### Read-only mode
 
 With `INFOMANIAK_READ_ONLY=true` the server **offers only the read-only tools**
 and refuses any other call, `infomaniak_api_call` included, with a message that
@@ -326,7 +360,7 @@ The kDrive routes follow Infomaniak's official kDrive MCP server and the publish
 | `infomaniak_create_kdrive_directory` | Create a directory |
 | `infomaniak_move_kdrive_file` / `infomaniak_copy_kdrive_file` / `infomaniak_rename_kdrive_file` | Move, copy, rename |
 | `infomaniak_delete_kdrive_file` | Delete a file or directory |
-| `infomaniak_share_kdrive_file` | Create a share link |
+| `infomaniak_share_kdrive_file` | Create a share link: `right` `public` (default) or `password` (with `password`), optional `valid_until` as a Unix timestamp |
 | `infomaniak_list_kdrive_trash` / `infomaniak_restore_kdrive_file` / `infomaniak_empty_kdrive_trash` | Trash |
 | `infomaniak_list_kdrive_file_versions` / `infomaniak_get_kdrive_activity` | Versions and activity |
 | `infomaniak_list_kdrive_favorites` / `infomaniak_add_kdrive_favorite` / `infomaniak_remove_kdrive_favorite` | Favorites |

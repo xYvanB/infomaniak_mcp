@@ -12,11 +12,13 @@ import {
   Tool,
   TextContent,
 } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { InfomaniakClient, KDRIVE_LANGS, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
-import { mailTools, MAIL_TOOL_NAMES, handleMailTool } from "./mail-tools.js";
-import { annotate, assertAllowed, PolicyRefusal, visibleTools } from "./policy.js";
-import { ImapReader, imapTools, IMAP_TOOL_NAMES, handleImapTool } from "./imap-tools.js";
+import { mailTools, mailHandlers } from "./mail-tools.js";
+import { annotate, assertAllowed, ConfirmMode, confirmationReason, PolicyRefusal, visibleTools } from "./policy.js";
+import { confirmWithPerson } from "./confirm.js";
+import { ImapReader, imapTools, imapHandlers, requireImapReader } from "./imap-tools.js";
 import {
   ToolContent,
   MAX_BINARY_BYTES,
@@ -29,8 +31,11 @@ import {
 } from "./content.js";
 import {
   validate,
+  handler,
+  toInputSchema,
+  ToolHandler,
+  NoInputSchema,
   AccountIdSchema,
-  DomainNameSchema,
   GetDomainSchema,
   ListDnsRecordsSchema,
   CreateDnsRecordSchema,
@@ -85,9 +90,13 @@ import {
 } from "./schemas.js";
 
 /**
- * Tool definitions for the Infomaniak MCP server
+ * Tool definitions for the Infomaniak MCP server: names, descriptions, and
+ * the descriptions of their parameters. The input schema clients see is
+ * derived from each tool's zod schema (see `tools` below), so the types,
+ * limits and required keys written here are documentation; a test holds
+ * them to the zod schema.
  */
-export const tools: Tool[] = [
+export const toolDefinitions: Tool[] = [
   ...mailTools,
   // Profile & Account Tools
   {
@@ -271,6 +280,7 @@ export const tools: Tool[] = [
         type: {
           type: "string",
           description: "DNS record type",
+          enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
         },
         target: {
           type: "string",
@@ -610,7 +620,7 @@ export const tools: Tool[] = [
         drive_id: { type: "number" },
         parent_id: { type: "number", description: "Parent directory ID (omit for the root directory, id 1)" },
         cursor: { type: "string", description: "Cursor from the previous page" },
-        limit: { type: "number", description: "Max entries per page" },
+        limit: { type: "number", description: "Entries per page (5-1000)" },
         type: { type: "string", enum: ["file", "dir"], description: "Only files or only directories" },
       },
       required: ["drive_id"],
@@ -631,7 +641,7 @@ export const tools: Tool[] = [
         query: { type: "string" },
         directory_id: { type: "number", description: "Only search inside this directory" },
         depth: { type: "string", enum: ["unlimited", "child"], description: "With directory_id: whole subtree (unlimited) or direct children (child)" },
-        limit: { type: "number", description: "Max results" },
+        limit: { type: "number", description: "Max results (5-1000)" },
       },
       required: ["drive_id", "query"],
     },
@@ -663,8 +673,18 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_share_kdrive_file",
-    description: "Create a shareable link for a file or directory in kDrive",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" }, right: { type: "string", enum: ["public", "password", "inherit"] }, valid_until: { type: "string" } }, required: ["drive_id", "file_id"] },
+    description: "Create a share link for a file or directory in kDrive: anyone with the link can open it (with right=password, anyone who also has the password)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        file_id: { type: "number" },
+        right: { type: "string", enum: ["public", "password"], description: "public (default) or password" },
+        password: { type: "string", description: "The link's password; required with right=password, and only then" },
+        valid_until: { type: "number", description: "Expiry as a Unix timestamp in seconds (optional)" },
+      },
+      required: ["drive_id", "file_id"],
+    },
   },
 
   // Swiss Backup Tools
@@ -1092,502 +1112,204 @@ export const tools: Tool[] = [
   },
 ];
 
-/**
- * Handle a tool call and return the result
- */
-async function handleToolCall(
-  client: InfomaniakClient,
-  name: string,
-  args: Record<string, unknown> | undefined,
-  kchatClient?: KChatClient | null,
-): Promise<unknown> {
-  if (MAIL_TOOL_NAMES.has(name)) {
-    return handleMailTool(client, name, args);
-  }
-  if (name.startsWith("infomaniak_kchat_")) {
-    if (!kchatClient) throw new Error("kChat is not configured. Set KCHAT_HOST and KCHAT_TOKEN environment variables.");
-    return handleKChatToolCall(kchatClient, name, args);
-  }
-  switch (name) {
-    // Profile & Account (no validation needed - no args)
-    case "infomaniak_ping":
-      return client.ping();
+type Ctx = { client: InfomaniakClient };
 
-    case "infomaniak_get_profile":
-      return client.getProfile();
+const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, ctx: Ctx) => Promise<unknown>) =>
+  handler(schema, run);
+const onKChat = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, kchat: KChatClient) => Promise<unknown>) =>
+  handler(schema, run);
 
-    case "infomaniak_list_accounts":
-      return client.getAccounts();
+/** Each Infomaniak API tool's input schema and what it does with the validated input. */
+const apiHandlers: Record<string, ToolHandler<Ctx>> = {
+  // Profile & Account
+  infomaniak_ping: on(NoInputSchema, (_v, { client }) => client.ping()),
+  infomaniak_get_profile: on(NoInputSchema, (_v, { client }) => client.getProfile()),
+  infomaniak_list_accounts: on(NoInputSchema, (_v, { client }) => client.getAccounts()),
+  infomaniak_get_account: on(AccountIdSchema, (v, { client }) => client.getAccount(v.account_id)),
+  infomaniak_list_products: on(AccountIdSchema, (v, { client }) => client.getAccountProducts(v.account_id)),
 
-    case "infomaniak_get_account": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getAccount(validated.account_id);
-    }
+  // Domains and DNS
+  infomaniak_list_domains: on(AccountIdSchema, (v, { client }) => client.getDomains(v.account_id)),
+  infomaniak_get_domain: on(GetDomainSchema, (v, { client }) => client.getDomain(v.account_id, v.domain)),
+  infomaniak_get_domain_nameservers: on(GetDomainNameserversSchema, (v, { client }) => client.getDomainNameservers(v.domain)),
+  infomaniak_update_domain_nameservers: on(UpdateDomainNameserversSchema, (v, { client }) =>
+    client.updateDomainNameservers(v.domain, v.nameservers)),
+  infomaniak_renew_domain: on(RenewDomainSchema, (v, { client }) => client.renewDomain(v.domain, v.duration)),
+  infomaniak_list_dns_records: on(ListDnsRecordsSchema, (v, { client }) => client.getDnsRecords(v.domain)),
+  infomaniak_create_dns_record: on(CreateDnsRecordSchema, ({ domain, ...record }, { client }) => client.createDnsRecord(domain, record)),
+  infomaniak_update_dns_record: on(UpdateDnsRecordSchema, ({ domain, record_id, ...record }, { client }) =>
+    client.updateDnsRecord(domain, record_id, record)),
+  infomaniak_delete_dns_record: on(DeleteDnsRecordSchema, (v, { client }) => client.deleteDnsRecord(v.domain, v.record_id)),
 
-    case "infomaniak_list_products": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getAccountProducts(validated.account_id);
-    }
+  // Web Hosting
+  infomaniak_list_web_hostings: on(AccountIdSchema, (v, { client }) => client.getWebHostings(v.account_id)),
+  infomaniak_get_web_hosting: on(HostingIdSchema, (v, { client }) => client.getWebHosting(v.hosting_id)),
+  infomaniak_list_sites: on(HostingIdSchema, (v, { client }) => client.getSites(v.hosting_id)),
+  infomaniak_get_site: on(SiteIdSchema, (v, { client }) => client.getSite(v.hosting_id, v.site_id)),
+  infomaniak_create_site: on(CreateSiteSchema, ({ hosting_id, ...site }, { client }) => client.createSite(hosting_id, site)),
+  infomaniak_update_site: on(UpdateSiteSchema, ({ hosting_id, site_id, ...site }, { client }) => client.updateSite(hosting_id, site_id, site)),
+  infomaniak_delete_site: on(DeleteSiteSchema, (v, { client }) => client.deleteSite(v.hosting_id, v.site_id)),
 
-    // Domains
-    case "infomaniak_list_domains": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getDomains(validated.account_id);
-    }
+  // Databases
+  infomaniak_list_databases: on(HostingIdSchema, (v, { client }) => client.getDatabases(v.hosting_id)),
+  infomaniak_get_database: on(DatabaseIdSchema, (v, { client }) => client.getDatabase(v.hosting_id, v.database_id)),
+  infomaniak_create_database: on(CreateDatabaseSchema, ({ hosting_id, ...database }, { client }) => client.createDatabase(hosting_id, database)),
+  infomaniak_delete_database: on(DeleteDatabaseSchema, (v, { client }) => client.deleteDatabase(v.hosting_id, v.database_id)),
 
-    case "infomaniak_get_domain": {
-      const validated = validate(GetDomainSchema, args);
-      return client.getDomain(validated.account_id, validated.domain);
-    }
+  // Cron jobs and FTP accounts
+  infomaniak_list_cron_jobs: on(HostingIdSchema, (v, { client }) => client.getCronJobs(v.hosting_id)),
+  infomaniak_create_cron_job: on(CreateCronJobSchema, ({ hosting_id, ...cron }, { client }) => client.createCronJob(hosting_id, cron)),
+  infomaniak_update_cron_job: on(UpdateCronJobSchema, ({ hosting_id, cron_id, ...cron }, { client }) =>
+    client.updateCronJob(hosting_id, cron_id, cron)),
+  infomaniak_delete_cron_job: on(CronJobIdSchema, (v, { client }) => client.deleteCronJob(v.hosting_id, v.cron_id)),
+  infomaniak_list_ftp_accounts: on(HostingIdSchema, (v, { client }) => client.getFtpAccounts(v.hosting_id)),
+  infomaniak_create_ftp_account: on(CreateFtpAccountSchema, ({ hosting_id, ...ftp }, { client }) => client.createFtpAccount(hosting_id, ftp)),
+  infomaniak_update_ftp_account: on(UpdateFtpAccountSchema, ({ hosting_id, ftp_id, ...ftp }, { client }) =>
+    client.updateFtpAccount(hosting_id, ftp_id, ftp)),
+  infomaniak_delete_ftp_account: on(FtpAccountIdSchema, (v, { client }) => client.deleteFtpAccount(v.hosting_id, v.ftp_id)),
 
-    case "infomaniak_get_domain_nameservers": {
-      const validated = validate(GetDomainNameserversSchema, args);
-      return client.getDomainNameservers(validated.domain);
+  // kDrive
+  infomaniak_list_kdrives: on(AccountIdSchema, (v, { client }) => client.getKDrives(v.account_id)),
+  infomaniak_get_kdrive: on(DriveIdSchema, (v, { client }) => client.getKDrive(v.drive_id)),
+  infomaniak_list_kdrive_files: on(ListKDriveFilesSchema, (v, { client }) =>
+    client.listKDriveFiles(v.drive_id, v.parent_id, { cursor: v.cursor, limit: v.limit, type: v.type })),
+  infomaniak_get_kdrive_file: on(KDriveFileIdSchema, (v, { client }) => client.getKDriveFile(v.drive_id, v.file_id)),
+  infomaniak_search_kdrive_files: on(SearchKDriveFilesSchema, (v, { client }) =>
+    client.searchKDriveFiles(v.drive_id, v.query, { directoryId: v.directory_id, depth: v.depth, limit: v.limit })),
+  infomaniak_create_kdrive_directory: on(CreateKDriveDirectorySchema, (v, { client }) =>
+    client.createKDriveDirectory(v.drive_id, { name: v.name, parent_id: v.parent_id })),
+  infomaniak_move_kdrive_file: on(MoveOrCopyKDriveFileSchema, (v, { client }) =>
+    client.moveKDriveFile(v.drive_id, v.file_id, v.destination_directory_id)),
+  infomaniak_copy_kdrive_file: on(MoveOrCopyKDriveFileSchema, (v, { client }) =>
+    client.copyKDriveFile(v.drive_id, v.file_id, v.destination_directory_id)),
+  infomaniak_rename_kdrive_file: on(RenameKDriveFileSchema, (v, { client }) => client.renameKDriveFile(v.drive_id, v.file_id, v.name)),
+  infomaniak_delete_kdrive_file: on(KDriveFileIdSchema, (v, { client }) => client.deleteKDriveFile(v.drive_id, v.file_id)),
+  infomaniak_share_kdrive_file: on(ShareKDriveFileSchema, ({ drive_id, file_id, ...link }, { client }) =>
+    client.shareKDriveFile(drive_id, file_id, link)),
+  infomaniak_list_kdrive_trash: on(KDriveTrashSchema, (v, { client }) => client.listKDriveTrash(v.drive_id)),
+  infomaniak_restore_kdrive_file: on(KDriveRestoreFileSchema, (v, { client }) =>
+    client.restoreKDriveFile(v.drive_id, v.file_id, v.destination_directory_id)),
+  infomaniak_empty_kdrive_trash: on(DriveIdSchema, (v, { client }) => client.emptyKDriveTrash(v.drive_id)),
+  infomaniak_list_kdrive_file_versions: on(KDriveFileIdSchema, (v, { client }) => client.listKDriveFileVersions(v.drive_id, v.file_id)),
+  infomaniak_get_kdrive_activity: on(KDriveActivitySchema, (v, { client }) => client.getKDriveActivity(v.drive_id, v.file_id, v.lang)),
+  infomaniak_list_kdrive_favorites: on(KDriveFavoritesSchema, (v, { client }) => client.listKDriveFavorites(v.drive_id)),
+  infomaniak_add_kdrive_favorite: on(KDriveFileIdSchema, (v, { client }) => client.addKDriveFavorite(v.drive_id, v.file_id)),
+  infomaniak_remove_kdrive_favorite: on(KDriveFileIdSchema, (v, { client }) => client.removeKDriveFavorite(v.drive_id, v.file_id)),
+  infomaniak_download_kdrive_file: on(DownloadKDriveFileSchema, async (v, { client }) => {
+    const { data: file } = await client.getKDriveFile(v.drive_id, v.file_id);
+    if (file.type === "dir") throw new Error(`${file.name} is a directory; use infomaniak_list_kdrive_files`);
+    if (file.size > MAX_BINARY_BYTES) {
+      throw new Error(`${file.name} is ${file.size} bytes; files over ${MAX_BINARY_BYTES} bytes cannot be returned`);
     }
-    case "infomaniak_update_domain_nameservers": {
-      const validated = validate(UpdateDomainNameserversSchema, args);
-      return client.updateDomainNameservers(validated.domain, validated.nameservers);
+    const download = await client.downloadKDriveFile(v.drive_id, v.file_id, MAX_BINARY_BYTES);
+    const downloaded = {
+      filename: file.name,
+      mimeType: file.mime_type ?? download.contentType,
+      bytes: download.bytes,
+    };
+    const metadata = { drive_id: v.drive_id, file_id: file.id };
+    return new ToolContent(
+      isTextLike(downloaded.mimeType, downloaded.filename)
+        ? textFileToContent(downloaded, v.max_chars ?? DEFAULT_TEXT_CHARS, metadata)
+        : binaryToContent(downloaded, `infomaniak-kdrive://${v.drive_id}/${file.id}`, metadata),
+    );
+  }),
+  infomaniak_upload_kdrive_file: on(UploadKDriveFileSchema, async (v, { client }) => {
+    const content = v.content_text !== undefined
+      ? new TextEncoder().encode(v.content_text)
+      : decodeBase64(v.content_base64 ?? "");
+    if (content.byteLength > MAX_BINARY_BYTES) {
+      throw new Error(`Upload is ${content.byteLength} bytes; the limit is ${MAX_BINARY_BYTES} bytes`);
     }
-    case "infomaniak_renew_domain": {
-      const validated = validate(RenewDomainSchema, args);
-      return client.renewDomain(validated.domain, validated.duration);
-    }
+    return client.uploadKDriveFile(v.drive_id, {
+      directoryId: v.directory_id ?? KDRIVE_ROOT_ID,
+      fileName: v.file_name,
+      content,
+      conflict: v.conflict,
+    });
+  }),
 
-    case "infomaniak_list_dns_records": {
-      const validated = validate(ListDnsRecordsSchema, args);
-      return client.getDnsRecords(validated.domain);
-    }
+  // Swiss Backup
+  infomaniak_list_swiss_backups: on(AccountIdSchema, (v, { client }) => client.getSwissBackups(v.account_id)),
+  infomaniak_get_swiss_backup: on(BackupIdSchema, (v, { client }) => client.getSwissBackup(v.backup_id)),
+  infomaniak_list_swiss_backup_slots: on(BackupIdSchema, (v, { client }) => client.getSwissBackupSlots(v.backup_id)),
 
-    case "infomaniak_create_dns_record": {
-      const validated = validate(CreateDnsRecordSchema, args);
-      return client.createDnsRecord(validated.domain, {
-        source: validated.source,
-        type: validated.type,
-        target: validated.target,
-        ttl: validated.ttl,
-        priority: validated.priority,
-      });
-    }
+  // VPS and dedicated servers
+  infomaniak_list_vps: on(NoInputSchema, (_v, { client }) => client.getVpsList()),
+  infomaniak_get_vps: on(VpsIdSchema, (v, { client }) => client.getVps(v.vps_id)),
+  infomaniak_reboot_vps: on(VpsIdSchema, (v, { client }) => client.rebootVps(v.vps_id)),
+  infomaniak_shutdown_vps: on(VpsIdSchema, (v, { client }) => client.shutdownVps(v.vps_id)),
+  infomaniak_boot_vps: on(VpsIdSchema, (v, { client }) => client.bootVps(v.vps_id)),
+  infomaniak_list_dedicated_servers: on(NoInputSchema, (_v, { client }) => client.getDedicatedServers()),
+  infomaniak_get_dedicated_server: on(ServerIdSchema, (v, { client }) => client.getDedicatedServer(v.server_id)),
+  infomaniak_reboot_dedicated_server: on(ServerIdSchema, (v, { client }) => client.rebootDedicatedServer(v.server_id)),
 
-    case "infomaniak_update_dns_record": {
-      const validated = validate(UpdateDnsRecordSchema, args);
-      return client.updateDnsRecord(
-        validated.domain,
-        validated.record_id,
-        {
-          source: validated.source,
-          type: validated.type,
-          target: validated.target,
-          ttl: validated.ttl,
-          priority: validated.priority,
-        }
-      );
-    }
+  // SSL certificates and invoicing
+  infomaniak_list_certificates: on(AccountIdSchema, (v, { client }) => client.getCertificates(v.account_id)),
+  infomaniak_get_certificate: on(CertificateIdSchema, (v, { client }) => client.getCertificate(v.certificate_id)),
+  infomaniak_list_invoices: on(AccountIdSchema, (v, { client }) => client.getInvoices(v.account_id)),
+  infomaniak_get_invoice: on(InvoiceIdSchema, (v, { client }) => client.getInvoice(v.account_id, v.invoice_id)),
 
-    case "infomaniak_delete_dns_record": {
-      const validated = validate(DeleteDnsRecordSchema, args);
-      return client.deleteDnsRecord(validated.domain, validated.record_id);
-    }
+  // Generic API call
+  infomaniak_api_call: on(ApiCallSchema, (v, { client }) => client.call(v.method, v.endpoint, v.body, v.query_params)),
+};
 
-    // Mail Services
-    case "infomaniak_list_web_hostings": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getWebHostings(validated.account_id);
-    }
+/** Each kChat tool's input schema and what it does with the validated input. */
+const kchatHandlers: Record<string, ToolHandler<KChatClient>> = {
+  infomaniak_kchat_get_me: onKChat(NoInputSchema, (_v, kchat) => kchat.getMe()),
+  infomaniak_kchat_list_teams: onKChat(NoInputSchema, (_v, kchat) => kchat.listTeams()),
+  infomaniak_kchat_list_my_teams: onKChat(NoInputSchema, (_v, kchat) => kchat.listMyTeams()),
+  infomaniak_kchat_list_channels: onKChat(KChatTeamIdSchema, (v, kchat) => kchat.listChannels(v.team_id)),
+  infomaniak_kchat_list_my_channels: onKChat(KChatTeamIdSchema, (v, kchat) => kchat.listMyChannels(v.team_id)),
+  infomaniak_kchat_get_channel: onKChat(KChatChannelIdSchema, (v, kchat) => kchat.getChannel(v.channel_id)),
+  infomaniak_kchat_get_channel_posts: onKChat(KChatGetChannelPostsSchema, (v, kchat) =>
+    kchat.getChannelPosts(v.channel_id, v.page, v.per_page)),
+  infomaniak_kchat_create_post: onKChat(CreateKChatPostSchema, (v, kchat) => kchat.createPost(v.channel_id, v.message, v.root_id)),
+  infomaniak_kchat_delete_post: onKChat(KChatPostIdSchema, (v, kchat) => kchat.deletePost(v.post_id)),
+  infomaniak_kchat_search_posts: onKChat(SearchKChatPostsSchema, (v, kchat) => kchat.searchPosts(v.team_id, v.terms, v.is_or_search)),
+  infomaniak_kchat_create_direct: onKChat(CreateKChatDirectChannelSchema, (v, kchat) =>
+    kchat.createDirectChannel([v.user_ids[0], v.user_ids[1]])),
+  infomaniak_kchat_search_users: onKChat(SearchKChatUsersSchema, (v, kchat) => kchat.searchUsers(v.term)),
+  infomaniak_kchat_list_users: onKChat(ListKChatUsersSchema, (v, kchat) =>
+    kchat.listUsers({ inTeamId: v.in_team_id, inChannelId: v.in_channel_id })),
+};
 
-    case "infomaniak_get_web_hosting": {
-      const validated = validate(HostingIdSchema, args);
-      return client.getWebHosting(validated.hosting_id);
-    }
+/** The input schema of every tool this server has, by name. */
+export const inputSchemas: ReadonlyMap<string, z.ZodTypeAny> = new Map(
+  [mailHandlers, apiHandlers, kchatHandlers, imapHandlers].flatMap((group) =>
+    Object.entries(group).map(([name, h]) => [name, h.schema] as [string, z.ZodTypeAny])),
+);
 
-    case "infomaniak_list_sites": {
-      const validated = validate(HostingIdSchema, args);
-      return client.getSites(validated.hosting_id);
-    }
-
-    case "infomaniak_get_site": {
-      const validated = validate(SiteIdSchema, args);
-      return client.getSite(validated.hosting_id, validated.site_id);
-    }
-
-    case "infomaniak_create_site": {
-      const validated = validate(CreateSiteSchema, args);
-      return client.createSite(validated.hosting_id, {
-        domain: validated.domain,
-        directory: validated.directory,
-        php_version: validated.php_version,
-      });
-    }
-
-    case "infomaniak_update_site": {
-      const validated = validate(UpdateSiteSchema, args);
-      return client.updateSite(
-        validated.hosting_id,
-        validated.site_id,
-        {
-          path: validated.path,
-          php_version: validated.php_version,
-        }
-      );
-    }
-
-    case "infomaniak_delete_site": {
-      const validated = validate(DeleteSiteSchema, args);
-      return client.deleteSite(validated.hosting_id, validated.site_id);
-    }
-
-    // Databases
-    case "infomaniak_list_databases": {
-      const validated = validate(HostingIdSchema, args);
-      return client.getDatabases(validated.hosting_id);
-    }
-
-    case "infomaniak_get_database": {
-      const validated = validate(DatabaseIdSchema, args);
-      return client.getDatabase(validated.hosting_id, validated.database_id);
-    }
-
-    case "infomaniak_create_database": {
-      const validated = validate(CreateDatabaseSchema, args);
-      return client.createDatabase(validated.hosting_id, {
-        name: validated.name,
-        charset: validated.charset,
-      });
-    }
-
-    case "infomaniak_delete_database": {
-      const validated = validate(DeleteDatabaseSchema, args);
-      return client.deleteDatabase(validated.hosting_id, validated.database_id);
-    }
-
-    case "infomaniak_list_cron_jobs": {
-      const validated = validate(HostingIdSchema, args);
-      return client.getCronJobs(validated.hosting_id);
-    }
-    case "infomaniak_create_cron_job": {
-      const validated = validate(CreateCronJobSchema, args);
-      return client.createCronJob(validated.hosting_id, { command: validated.command, schedule: validated.schedule, description: validated.description });
-    }
-    case "infomaniak_update_cron_job": {
-      const validated = validate(UpdateCronJobSchema, args);
-      return client.updateCronJob(validated.hosting_id, validated.cron_id, { command: validated.command, schedule: validated.schedule, description: validated.description });
-    }
-    case "infomaniak_delete_cron_job": {
-      const validated = validate(CronJobIdSchema, args);
-      return client.deleteCronJob(validated.hosting_id, validated.cron_id);
-    }
-    case "infomaniak_list_ftp_accounts": {
-      const validated = validate(HostingIdSchema, args);
-      return client.getFtpAccounts(validated.hosting_id);
-    }
-    case "infomaniak_create_ftp_account": {
-      const validated = validate(CreateFtpAccountSchema, args);
-      return client.createFtpAccount(validated.hosting_id, { login: validated.login, password: validated.password, home_directory: validated.home_directory });
-    }
-    case "infomaniak_update_ftp_account": {
-      const validated = validate(UpdateFtpAccountSchema, args);
-      return client.updateFtpAccount(validated.hosting_id, validated.ftp_id, { password: validated.password, home_directory: validated.home_directory, is_active: validated.is_active });
-    }
-    case "infomaniak_delete_ftp_account": {
-      const validated = validate(FtpAccountIdSchema, args);
-      return client.deleteFtpAccount(validated.hosting_id, validated.ftp_id);
-    }
-
-    // kDrive
-    case "infomaniak_list_kdrives": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getKDrives(validated.account_id);
-    }
-
-    case "infomaniak_get_kdrive": {
-      const validated = validate(DriveIdSchema, args);
-      return client.getKDrive(validated.drive_id);
-    }
-
-    case "infomaniak_list_kdrive_files": {
-      const validated = validate(ListKDriveFilesSchema, args);
-      return client.listKDriveFiles(validated.drive_id, validated.parent_id, {
-        cursor: validated.cursor,
-        limit: validated.limit,
-        type: validated.type,
-      });
-    }
-    case "infomaniak_get_kdrive_file": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.getKDriveFile(validated.drive_id, validated.file_id);
-    }
-    case "infomaniak_search_kdrive_files": {
-      const validated = validate(SearchKDriveFilesSchema, args);
-      return client.searchKDriveFiles(validated.drive_id, validated.query, {
-        directoryId: validated.directory_id,
-        depth: validated.depth,
-        limit: validated.limit,
-      });
-    }
-    case "infomaniak_create_kdrive_directory": {
-      const validated = validate(CreateKDriveDirectorySchema, args);
-      return client.createKDriveDirectory(validated.drive_id, { name: validated.name, parent_id: validated.parent_id });
-    }
-    case "infomaniak_move_kdrive_file": {
-      const validated = validate(MoveOrCopyKDriveFileSchema, args);
-      return client.moveKDriveFile(validated.drive_id, validated.file_id, validated.destination_directory_id);
-    }
-    case "infomaniak_copy_kdrive_file": {
-      const validated = validate(MoveOrCopyKDriveFileSchema, args);
-      return client.copyKDriveFile(validated.drive_id, validated.file_id, validated.destination_directory_id);
-    }
-    case "infomaniak_rename_kdrive_file": {
-      const validated = validate(RenameKDriveFileSchema, args);
-      return client.renameKDriveFile(validated.drive_id, validated.file_id, validated.name);
-    }
-    case "infomaniak_delete_kdrive_file": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.deleteKDriveFile(validated.drive_id, validated.file_id);
-    }
-    case "infomaniak_share_kdrive_file": {
-      const validated = validate(ShareKDriveFileSchema, args);
-      return client.shareKDriveFile(validated.drive_id, validated.file_id, { right: validated.right, valid_until: validated.valid_until });
-    }
-
-    // Swiss Backup
-    case "infomaniak_list_swiss_backups": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getSwissBackups(validated.account_id);
-    }
-
-    case "infomaniak_get_swiss_backup": {
-      const validated = validate(BackupIdSchema, args);
-      return client.getSwissBackup(validated.backup_id);
-    }
-
-    case "infomaniak_list_swiss_backup_slots": {
-      const validated = validate(BackupIdSchema, args);
-      return client.getSwissBackupSlots(validated.backup_id);
-    }
-
-    // VPS (no validation for list)
-    case "infomaniak_list_vps":
-      return client.getVpsList();
-
-    case "infomaniak_get_vps": {
-      const validated = validate(VpsIdSchema, args);
-      return client.getVps(validated.vps_id);
-    }
-
-    case "infomaniak_reboot_vps": {
-      const validated = validate(VpsIdSchema, args);
-      return client.rebootVps(validated.vps_id);
-    }
-
-    case "infomaniak_shutdown_vps": {
-      const validated = validate(VpsIdSchema, args);
-      return client.shutdownVps(validated.vps_id);
-    }
-
-    case "infomaniak_boot_vps": {
-      const validated = validate(VpsIdSchema, args);
-      return client.bootVps(validated.vps_id);
-    }
-
-    // Dedicated Servers (no validation for list)
-    case "infomaniak_list_dedicated_servers":
-      return client.getDedicatedServers();
-
-    case "infomaniak_get_dedicated_server": {
-      const validated = validate(ServerIdSchema, args);
-      return client.getDedicatedServer(validated.server_id);
-    }
-
-    case "infomaniak_reboot_dedicated_server": {
-      const validated = validate(ServerIdSchema, args);
-      return client.rebootDedicatedServer(validated.server_id);
-    }
-
-    // SSL Certificates
-    case "infomaniak_list_certificates": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getCertificates(validated.account_id);
-    }
-
-    case "infomaniak_get_certificate": {
-      const validated = validate(CertificateIdSchema, args);
-      return client.getCertificate(validated.certificate_id);
-    }
-
-    // Invoicing
-    case "infomaniak_list_invoices": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getInvoices(validated.account_id);
-    }
-
-    case "infomaniak_get_invoice": {
-      const validated = validate(InvoiceIdSchema, args);
-      return client.getInvoice(validated.account_id, validated.invoice_id);
-    }
-
-    // Generic API Call
-    case "infomaniak_api_call": {
-      const validated = validate(ApiCallSchema, args);
-      return client.call(
-        validated.method,
-        validated.endpoint,
-        validated.body,
-        validated.query_params
-      );
-    }
-
-    // kDrive Extras
-    case "infomaniak_list_kdrive_trash": {
-      const validated = validate(KDriveTrashSchema, args);
-      return client.listKDriveTrash(validated.drive_id);
-    }
-
-    case "infomaniak_restore_kdrive_file": {
-      const validated = validate(KDriveRestoreFileSchema, args);
-      return client.restoreKDriveFile(validated.drive_id, validated.file_id, validated.destination_directory_id);
-    }
-
-    case "infomaniak_empty_kdrive_trash": {
-      const validated = validate(DriveIdSchema, args);
-      return client.emptyKDriveTrash(validated.drive_id);
-    }
-
-    case "infomaniak_list_kdrive_file_versions": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.listKDriveFileVersions(validated.drive_id, validated.file_id);
-    }
-
-    case "infomaniak_get_kdrive_activity": {
-      const validated = validate(KDriveActivitySchema, args);
-      return client.getKDriveActivity(validated.drive_id, validated.file_id, validated.lang);
-    }
-
-    case "infomaniak_add_kdrive_favorite": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.addKDriveFavorite(validated.drive_id, validated.file_id);
-    }
-
-    case "infomaniak_remove_kdrive_favorite": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.removeKDriveFavorite(validated.drive_id, validated.file_id);
-    }
-
-    case "infomaniak_download_kdrive_file": {
-      const validated = validate(DownloadKDriveFileSchema, args);
-      const { data: file } = await client.getKDriveFile(validated.drive_id, validated.file_id);
-      if (file.type === "dir") throw new Error(`${file.name} is a directory; use infomaniak_list_kdrive_files`);
-      if (file.size > MAX_BINARY_BYTES) {
-        throw new Error(`${file.name} is ${file.size} bytes; files over ${MAX_BINARY_BYTES} bytes cannot be returned`);
-      }
-      const download = await client.downloadKDriveFile(validated.drive_id, validated.file_id, MAX_BINARY_BYTES);
-      const downloaded = {
-        filename: file.name,
-        mimeType: file.mime_type ?? download.contentType,
-        bytes: download.bytes,
-      };
-      const metadata = { drive_id: validated.drive_id, file_id: file.id };
-      return new ToolContent(
-        isTextLike(downloaded.mimeType, downloaded.filename)
-          ? textFileToContent(downloaded, validated.max_chars ?? DEFAULT_TEXT_CHARS, metadata)
-          : binaryToContent(downloaded, `infomaniak-kdrive://${validated.drive_id}/${file.id}`, metadata),
-      );
-    }
-
-    case "infomaniak_upload_kdrive_file": {
-      const validated = validate(UploadKDriveFileSchema, args);
-      const content = validated.content_text !== undefined
-        ? new TextEncoder().encode(validated.content_text)
-        : decodeBase64(validated.content_base64 ?? "");
-      if (content.byteLength > MAX_BINARY_BYTES) {
-        throw new Error(`Upload is ${content.byteLength} bytes; the limit is ${MAX_BINARY_BYTES} bytes`);
-      }
-      return client.uploadKDriveFile(validated.drive_id, {
-        directoryId: validated.directory_id ?? KDRIVE_ROOT_ID,
-        fileName: validated.file_name,
-        content,
-        conflict: validated.conflict,
-      });
-    }
-
-    case "infomaniak_list_kdrive_favorites": {
-      const validated = validate(KDriveFavoritesSchema, args);
-      return client.listKDriveFavorites(validated.drive_id);
-    }
-
-    // Mail Extras
-    default:
-      throw new Error(`Unknown tool: ${name}`);
-  }
+/** A tool's definition with its input schema derived from the zod schema that validates it. */
+function published(tool: Tool): Tool {
+  const schema = inputSchemas.get(tool.name);
+  if (!schema) throw new Error(`server: tool ${tool.name} has no handler`);
+  return { ...tool, inputSchema: toInputSchema(schema, tool.inputSchema) };
 }
 
-async function handleKChatToolCall(
-  client: KChatClient,
+/** Every tool as listed to clients, with its input schema derived from zod. Startup fails if one has no handler. */
+export const tools: Tool[] = toolDefinitions.map(published);
+/** The same, with hints and approval marker from the policy. Startup fails if one cannot be classified. */
+export const annotatedTools: Tool[] = annotate(tools);
+/** The IMAP tools as listed when IMAP is configured. */
+export const annotatedImapTools: Tool[] = annotate(imapTools.map(published));
+
+/** Runs an already-validated call. */
+async function runTool(
   name: string,
-  args: Record<string, unknown> | undefined,
+  input: unknown,
+  client: InfomaniakClient,
+  kchatClient: KChatClient | null,
+  imapReader: ImapReader | null,
 ): Promise<unknown> {
-  switch (name) {
-    case "infomaniak_kchat_get_me":
-      return client.getMe();
-
-    case "infomaniak_kchat_list_teams":
-      return client.listTeams();
-
-    case "infomaniak_kchat_list_my_teams":
-      return client.listMyTeams();
-
-    case "infomaniak_kchat_list_channels": {
-      const validated = validate(KChatTeamIdSchema, args);
-      return client.listChannels(validated.team_id);
-    }
-
-    case "infomaniak_kchat_list_my_channels": {
-      const validated = validate(KChatTeamIdSchema, args);
-      return client.listMyChannels(validated.team_id);
-    }
-
-    case "infomaniak_kchat_get_channel": {
-      const validated = validate(KChatChannelIdSchema, args);
-      return client.getChannel(validated.channel_id);
-    }
-
-    case "infomaniak_kchat_get_channel_posts": {
-      const validated = validate(KChatGetChannelPostsSchema, args);
-      return client.getChannelPosts(validated.channel_id, validated.page, validated.per_page);
-    }
-
-    case "infomaniak_kchat_create_post": {
-      const validated = validate(CreateKChatPostSchema, args);
-      return client.createPost(validated.channel_id, validated.message, validated.root_id);
-    }
-
-    case "infomaniak_kchat_delete_post": {
-      const validated = validate(KChatPostIdSchema, args);
-      return client.deletePost(validated.post_id);
-    }
-
-    case "infomaniak_kchat_search_posts": {
-      const validated = validate(SearchKChatPostsSchema, args);
-      return client.searchPosts(validated.team_id, validated.terms, validated.is_or_search);
-    }
-
-    case "infomaniak_kchat_create_direct": {
-      const validated = validate(CreateKChatDirectChannelSchema, args);
-      return client.createDirectChannel(validated.user_ids as [string, string]);
-    }
-
-    case "infomaniak_kchat_search_users": {
-      const validated = validate(SearchKChatUsersSchema, args);
-      return client.searchUsers(validated.term);
-    }
-
-    case "infomaniak_kchat_list_users": {
-      const validated = validate(ListKChatUsersSchema, args);
-      return client.listUsers({ inTeamId: validated.in_team_id, inChannelId: validated.in_channel_id });
-    }
-
-    default:
-      throw new Error(`Unknown kChat tool: ${name}`);
+  if (mailHandlers[name]) return mailHandlers[name].run(input, client);
+  if (apiHandlers[name]) return apiHandlers[name].run(input, { client });
+  if (kchatHandlers[name]) {
+    if (!kchatClient) throw new Error("kChat is not configured. Set KCHAT_HOST and KCHAT_TOKEN environment variables.");
+    return kchatHandlers[name].run(input, kchatClient);
   }
+  if (imapHandlers[name]) return imapHandlers[name].run(input, requireImapReader(imapReader));
+  throw new Error(`Unknown tool: ${name}`);
 }
 
 /**
@@ -1595,7 +1317,7 @@ async function handleKChatToolCall(
  *
  * @param client - The Infomaniak API client to use for tool calls
  * @param kchatClient - Optional kChat API client
- * @param imapReader - Optional IMAP reader; without it the mail-reading tools are not listed
+ * @param options - Read-only mode, IMAP reader, who asks for approval
  * @returns Configured MCP Server instance
  */
 export interface ServerOptions {
@@ -1603,11 +1325,11 @@ export interface ServerOptions {
   readOnly?: boolean;
   /** Reads the mailbox over IMAP; without it the mail-reading tools are not listed. */
   imapReader?: ImapReader | null;
+  /** Who asks the person before a tool that needs approval (INFOMANIAK_CONFIRM); default: the server, by elicitation. */
+  confirm?: ConfirmMode;
+  /** How long the person has to answer (default CONFIRM_TIMEOUT_MS). */
+  confirmTimeoutMs?: number;
 }
-
-/** Every tool with its annotations; built once, and startup fails if one cannot be classified. */
-export const annotatedTools: Tool[] = annotate(tools);
-const annotatedImapTools: Tool[] = annotate(imapTools);
 
 export function createMcpServer(
   client: InfomaniakClient,
@@ -1616,6 +1338,7 @@ export function createMcpServer(
 ): Server {
   const readOnly = options.readOnly ?? false;
   const imapReader = options.imapReader ?? null;
+  const confirm = options.confirm ?? "elicitation";
   const known = imapReader ? [...annotatedTools, ...annotatedImapTools] : annotatedTools;
   const offered = visibleTools(known, readOnly);
   const server = new Server(
@@ -1635,15 +1358,26 @@ export function createMcpServer(
     return { tools: offered };
   });
 
-  // Handle tool calls
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // Handle tool calls: the policy, then validation, then the person's approval, then the API.
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
 
     try {
       assertAllowed(name, known, readOnly);
-      const result = IMAP_TOOL_NAMES.has(name)
-        ? await handleImapTool(imapReader, name, args)
-        : await handleToolCall(client, name, args, kchatClient);
+      const schema = inputSchemas.get(name);
+      if (!schema) throw new Error(`Unknown tool: ${name}`);
+      const input = validate(schema, args ?? {});
+
+      const reason = confirmationReason(name);
+      if (reason !== null && confirm === "elicitation") {
+        await confirmWithPerson(server, { name, reason, input }, {
+          relatedRequestId: extra.requestId,
+          signal: extra.signal,
+          timeoutMs: options.confirmTimeoutMs,
+        });
+      }
+
+      const result = await runTool(name, input, client, kchatClient ?? null, imapReader);
       if (result instanceof ToolContent) return { content: result.content };
 
       const content: TextContent[] = [

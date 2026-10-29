@@ -222,7 +222,7 @@ export interface KDriveFile {
 export interface KDriveShareLink {
   url: string;
   right: string;
-  valid_until?: string;
+  valid_until?: number | null;
 }
 
 export interface KDriveFileVersion {
@@ -321,14 +321,22 @@ export interface Product {
 /** Site creation is slow on the API side (it can exceed 30s). */
 const CREATE_SITE_TIMEOUT_MS = 120_000;
 
-/** A value that travels as one path segment, and cannot leave it. */
-const seg = (value: string | number): string => encodeURIComponent(String(value));
+/**
+ * A value that travels as one path segment, and cannot leave it. Encoding
+ * keeps "/" in; "." and ".." it leaves as they are, and the URL parser would
+ * resolve them to another route, so they are refused.
+ */
+const seg = (value: string | number): string => {
+  const text = String(value);
+  if (text === '.' || text === '..') throw new Error(`"${text}" cannot be sent as a path segment`);
+  return encodeURIComponent(text);
+};
 
 /** kDrive's root directory always has file id 1. */
 export const KDRIVE_ROOT_ID = 1;
 
 /** Languages the kDrive activity feed is written in. */
-export const KDRIVE_LANGS = ['en', 'fr', 'de', 'it', 'es'] as const;
+export const KDRIVE_LANGS = ['en', 'fr', 'de', 'it', 'es', 'nl', 'pt'] as const;
 export type KDriveLang = (typeof KDRIVE_LANGS)[number];
 
 class TokenBucket {
@@ -540,23 +548,23 @@ export class InfomaniakClient {
   }
 
   async getDomain(accountId: number, domain: string): Promise<ApiResponse<Domain>> {
-    return this.request<ApiResponse<Domain>>('GET', `/1/domain/account/${accountId}/domain/${domain}`);
+    return this.request<ApiResponse<Domain>>('GET', `/1/domain/account/${accountId}/domain/${seg(domain)}`);
   }
 
   async getDomainNameservers(domain: string): Promise<ApiResponse<DomainNameserver[]>> {
-    return this.request<ApiResponse<DomainNameserver[]>>('GET', `/1/domain/${domain}/nameserver`);
+    return this.request<ApiResponse<DomainNameserver[]>>('GET', `/1/domain/${seg(domain)}/nameserver`);
   }
 
   async updateDomainNameservers(domain: string, nameservers: DomainNameserver[]): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('PUT', `/1/domain/${domain}/nameserver`, { nameservers });
+    return this.request<ApiResponse<void>>('PUT', `/1/domain/${seg(domain)}/nameserver`, { nameservers });
   }
 
   async renewDomain(domain: string, duration: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('POST', `/1/domain/${domain}/renew`, { duration });
+    return this.request<ApiResponse<void>>('POST', `/1/domain/${seg(domain)}/renew`, { duration });
   }
 
   async getDnsRecords(domain: string): Promise<ApiResponse<DnsRecord[]>> {
-    return this.request<ApiResponse<DnsRecord[]>>('GET', `/1/domain/${domain}/dns/record`);
+    return this.request<ApiResponse<DnsRecord[]>>('GET', `/1/domain/${seg(domain)}/dns/record`);
   }
 
   async createDnsRecord(domain: string, record: {
@@ -566,7 +574,7 @@ export class InfomaniakClient {
     ttl?: number;
     priority?: number;
   }): Promise<ApiResponse<DnsRecord>> {
-    return this.request<ApiResponse<DnsRecord>>('POST', `/1/domain/${domain}/dns/record`, record);
+    return this.request<ApiResponse<DnsRecord>>('POST', `/1/domain/${seg(domain)}/dns/record`, record);
   }
 
   async updateDnsRecord(domain: string, recordId: number, record: {
@@ -576,11 +584,11 @@ export class InfomaniakClient {
     ttl?: number;
     priority?: number;
   }): Promise<ApiResponse<DnsRecord>> {
-    return this.request<ApiResponse<DnsRecord>>('PUT', `/1/domain/${domain}/dns/record/${recordId}`, record);
+    return this.request<ApiResponse<DnsRecord>>('PUT', `/1/domain/${seg(domain)}/dns/record/${recordId}`, record);
   }
 
   async deleteDnsRecord(domain: string, recordId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/1/domain/${domain}/dns/record/${recordId}`);
+    return this.request<ApiResponse<void>>('DELETE', `/1/domain/${seg(domain)}/dns/record/${recordId}`);
   }
 
   // Mail — on the documented routes: a mail service is a *mail hosting*, a
@@ -871,8 +879,13 @@ export class InfomaniakClient {
     return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/${fileId}`);
   }
 
-  async shareKDriveFile(driveId: number, fileId: number, options: { right?: string; valid_until?: string } = {}): Promise<ApiResponse<KDriveShareLink>> {
-    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/link`, options);
+  /** The link endpoint requires `right`; `valid_until` is a Unix timestamp. */
+  async shareKDriveFile(
+    driveId: number,
+    fileId: number,
+    link: { right: 'public' | 'password'; password?: string; valid_until?: number },
+  ): Promise<ApiResponse<KDriveShareLink>> {
+    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/link`, link);
   }
 
   async listKDriveTrash(driveId: number): Promise<ApiResponse<KDriveFile[]>> {

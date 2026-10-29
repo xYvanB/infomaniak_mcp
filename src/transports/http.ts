@@ -25,6 +25,7 @@ import { InfomaniakClient } from "../infomaniak-client.js";
 import { KChatClient } from "../kchat-client.js";
 import { ImapReader } from "../imap-tools.js";
 import { createMcpServer, ServerOptions } from "../server.js";
+import { ConfirmMode } from "../policy.js";
 
 export interface HttpServerOptions {
   /** Port to listen on (default: 3000) */
@@ -41,6 +42,8 @@ export interface HttpServerOptions {
   readOnly?: boolean;
   /** Reads the mailbox over IMAP; without it the mail-reading tools are not listed */
   imapReader?: ImapReader | null;
+  /** Who asks the person before a tool that needs approval (INFOMANIAK_CONFIRM) */
+  confirm?: ConfirmMode;
 }
 
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -173,7 +176,7 @@ export function createHttpApp(
       });
 
       // Create and connect the MCP server for this session
-      const server = createMcpServer(client, kchatClient, { readOnly: options.readOnly, imapReader: options.imapReader });
+      const server = createMcpServer(client, kchatClient, { readOnly: options.readOnly, imapReader: options.imapReader, confirm: options.confirm });
       await server.connect(transport);
 
       // Store session immediately if stateful mode (before handleRequest)

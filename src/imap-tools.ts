@@ -24,7 +24,7 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ImapFlow } from "imapflow";
 import PostalMime from "postal-mime";
 import { z } from "zod";
-import { validate } from "./schemas.js";
+import { handler, input, NoInputSchema, ToolHandler, validate } from "./schemas.js";
 
 export interface ImapConfig {
   host: string;
@@ -67,7 +67,7 @@ const term = z.string().min(1).max(200).optional();
 const day = (name: string) =>
   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, `${name} is a date as YYYY-MM-DD`).optional();
 
-export const SearchMailMessagesSchema = z.object({
+export const SearchMailMessagesSchema = input({
   folder,
   from: term,
   to: term,
@@ -78,7 +78,7 @@ export const SearchMailMessagesSchema = z.object({
   limit: z.number().int().min(1).max(50, "limit is at most 50").optional(),
 });
 
-export const GetMailMessageSchema = z.object({
+export const GetMailMessageSchema = input({
   folder,
   uid: z.number({ required_error: "uid is required" }).int().positive(),
   max_chars: z.number().int().min(1).max(100_000).optional(),
@@ -306,18 +306,28 @@ export class ImapReader {
   }
 }
 
-export async function handleImapTool(reader: ImapReader | null | undefined, name: string, args: unknown): Promise<unknown> {
+const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, reader: ImapReader) => Promise<unknown>) =>
+  handler(schema, run);
+
+/** Each IMAP tool's input schema and what it does with the validated input. */
+export const imapHandlers: Record<string, ToolHandler<ImapReader>> = {
+  infomaniak_list_mail_folders: on(NoInputSchema, (_v, reader) => reader.listFolders()),
+  infomaniak_search_mail_messages: on(SearchMailMessagesSchema, (v, reader) => reader.search(v)),
+  infomaniak_get_mail_message: on(GetMailMessageSchema, (v, reader) => reader.get(v)),
+};
+
+/** Ensures an IMAP reader is configured; the tools are not listed without one. */
+export function requireImapReader(reader: ImapReader | null | undefined): ImapReader {
   if (!reader) {
     throw new Error("IMAP is not configured: set INFOMANIAK_IMAP_USER and INFOMANIAK_IMAP_PASSWORD (or INFOMANIAK_IMAP_PASSWORD_FILE)");
   }
-  switch (name) {
-    case "infomaniak_list_mail_folders":
-      return reader.listFolders();
-    case "infomaniak_search_mail_messages":
-      return reader.search(validate(SearchMailMessagesSchema, args ?? {}));
-    case "infomaniak_get_mail_message":
-      return reader.get(validate(GetMailMessageSchema, args ?? {}));
-    default:
-      throw new Error(`Unknown IMAP tool: ${name}`);
-  }
+  return reader;
+}
+
+/** Validates `args` against the tool's schema, then runs it. */
+export async function handleImapTool(reader: ImapReader | null | undefined, name: string, args: unknown): Promise<unknown> {
+  const ready = requireImapReader(reader);
+  const tool = imapHandlers[name];
+  if (!tool) throw new Error(`Unknown IMAP tool: ${name}`);
+  return tool.run(validate(tool.schema, args ?? {}), ready);
 }

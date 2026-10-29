@@ -15,6 +15,8 @@
  * - MCP_CORS_ORIGINS: Comma-separated list of allowed CORS origins (default: CORS disabled)
  * - MCP_STATELESS: Set to 'true' for stateless mode (default: false)
  * - INFOMANIAK_READ_ONLY: Set to 'true' to offer and allow read-only tools only
+ * - INFOMANIAK_CONFIRM: Who asks before a destructive or sensitive tool runs:
+ *   'elicitation' (default, the server asks and refuses when it cannot) or 'client'
  * - INFOMANIAK_IMAP_USER, INFOMANIAK_IMAP_PASSWORD or INFOMANIAK_IMAP_PASSWORD_FILE:
  *   optional, to read the mailbox over IMAP (see src/imap-tools.ts)
  *
@@ -26,7 +28,7 @@ import { KChatClient } from "./kchat-client.js";
 import { ImapReader, imapConfigFromEnv } from "./imap-tools.js";
 import { startStdioServer } from "./transports/stdio.js";
 import { startHttpServer } from "./transports/http.js";
-import { readOnlyFromEnv } from "./policy.js";
+import { confirmModeFromEnv, ConfirmMode, readOnlyFromEnv } from "./policy.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.INFOMANIAK_API_TOKEN;
@@ -68,13 +70,20 @@ const corsOrigins = (process.env.MCP_CORS_ORIGINS ?? "")
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
 const readOnly = readOnlyFromEnv();
+let confirm: ConfirmMode;
+try {
+  confirm = confirmModeFromEnv();
+} catch (error) {
+  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(client, { port, host, stateless, authToken, corsOrigins, readOnly, imapReader }, kchatClient);
+    await startHttpServer(client, { port, host, stateless, authToken, corsOrigins, readOnly, imapReader, confirm }, kchatClient);
   } else if (transport === "stdio") {
-    await startStdioServer(client, kchatClient, { readOnly, imapReader });
+    await startStdioServer(client, kchatClient, { readOnly, imapReader, confirm });
   } else {
     console.error(`Error: Unknown transport '${transport}'. Use 'stdio' or 'http'.`);
     process.exit(1);

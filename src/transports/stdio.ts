@@ -26,5 +26,8 @@ export async function startStdioServer(
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
-  console.error(`Infomaniak MCP Server running on stdio${options.readOnly ? " (read-only)" : ""}`);
+  console.error(
+    `Infomaniak MCP Server running on stdio${options.readOnly ? " (read-only)" : ""}` +
+      `, approvals asked by the ${options.confirm === "client" ? "client" : "server (elicitation)"}`,
+  );
 }

@@ -1,17 +1,68 @@
 /**
  * Zod validation schemas for MCP tool inputs
+ *
+ * Every tool input is a strict object: a key the tool does not know is an
+ * error, not silently dropped, so a mistyped option cannot turn into a call
+ * that does something else than asked. Ids are positive integers, and every
+ * string that ends up in a URL path is held to a shape that cannot leave its
+ * path segment (the client also encodes it). Where a route is in Infomaniak's
+ * published OpenAPI document, the constraints follow it; routes outside it
+ * (see src/api-routes.contract.test.ts) get only those sanity checks.
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { KDRIVE_LANGS } from './infomaniak-client.js';
 
+/** A tool's input: an object that refuses keys it does not declare. */
+export const input = <T extends z.ZodRawShape>(shape: T) => z.object(shape).strict();
+
+/** A positive integer id, as every Infomaniak id in a path is. */
+export const id = (name: string) =>
+  z.number({ required_error: `${name} is required`, invalid_type_error: `${name} must be a number` })
+    .int(`${name} must be an integer`)
+    .positive(`${name} must be positive`);
+
+/**
+ * A domain name: dot-separated labels of letters (IDN included), digits and
+ * hyphens. No "/", "?", "#", "%" or "..", so it cannot reach another route
+ * when it is put in a path.
+ */
+const DOMAIN_NAME = /^[\p{L}\p{M}\p{N}-]+(\.[\p{L}\p{M}\p{N}-]+)+$/u;
+// A refinement rather than .regex(): a JSON Schema pattern has no `u` flag, so
+// it could not carry the Unicode classes that let IDN labels through.
+export const domainName = z
+  .string({ required_error: 'domain is required' })
+  .min(1, 'domain cannot be empty')
+  .max(253, 'domain is at most 253 characters')
+  .refine((name) => DOMAIN_NAME.test(name), 'domain must be a domain name such as example.com');
+
+/**
+ * False for "." and "..", the segments a URL parser resolves to the parent
+ * route (any run of dots, to be safe), whatever encoding they get.
+ */
+export const notOnlyDots = (value: string): boolean => !/^\.+$/.test(value);
+
+/** A kChat (Mattermost) id: letters and digits only. */
+const kchatId = (name: string) =>
+  z.string({ required_error: `${name} is required` })
+    .min(1, `${name} cannot be empty`)
+    .regex(/^[A-Za-z0-9]+$/, `${name} is a kChat id (letters and digits)`);
+
+/** Unix time in seconds, as the API takes dates, up to 9999-12-31. */
+const unixTime = z.number().int().min(0).max(253402300799);
+
+/** Tools that take no input. */
+export const NoInputSchema = input({});
+
 // Common schemas
-export const AccountIdSchema = z.object({
-  account_id: z.number({ required_error: 'account_id is required' }).positive('account_id must be positive'),
+export const AccountIdSchema = input({
+  account_id: id('account_id'),
 });
 
-export const DomainNameSchema = z.object({
-  domain: z.string({ required_error: 'domain is required' }).min(1, 'domain cannot be empty'),
+export const DomainNameSchema = input({
+  domain: domainName,
 });
 
 // DNS Record schemas
@@ -19,57 +70,56 @@ export const DnsRecordTypeSchema = z.enum(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'N
 
 export const ListDnsRecordsSchema = DomainNameSchema;
 
-export const CreateDnsRecordSchema = z.object({
-  domain: z.string().min(1, 'domain is required'),
+export const CreateDnsRecordSchema = input({
+  domain: domainName,
   source: z.string({ required_error: 'source is required' }),
   type: DnsRecordTypeSchema,
   target: z.string({ required_error: 'target is required' }).min(1, 'target cannot be empty'),
-  ttl: z.number().min(60).max(86400).optional(),
-  priority: z.number().min(0).max(65535).optional(),
+  ttl: z.number().int().min(60).max(86400).optional(),
+  priority: z.number().int().min(0).max(65535).optional(),
 });
 
-export const UpdateDnsRecordSchema = z.object({
-  domain: z.string().min(1, 'domain is required'),
-  record_id: z.number({ required_error: 'record_id is required' }).positive(),
+export const UpdateDnsRecordSchema = input({
+  domain: domainName,
+  record_id: id('record_id'),
   source: z.string().optional(),
   type: DnsRecordTypeSchema.optional(),
   target: z.string().min(1).optional(),
-  ttl: z.number().min(60).max(86400).optional(),
-  priority: z.number().min(0).max(65535).optional(),
+  ttl: z.number().int().min(60).max(86400).optional(),
+  priority: z.number().int().min(0).max(65535).optional(),
 });
 
-export const DeleteDnsRecordSchema = z.object({
-  domain: z.string().min(1, 'domain is required'),
-  record_id: z.number({ required_error: 'record_id is required' }).positive(),
+export const DeleteDnsRecordSchema = input({
+  domain: domainName,
+  record_id: id('record_id'),
 });
 
 // Domain schemas
-export const GetDomainSchema = z.object({
-  account_id: z.number().positive(),
-  domain: z.string().min(1),
+export const GetDomainSchema = input({
+  account_id: id('account_id'),
+  domain: domainName,
 });
 
 // Web Hosting schemas
-export const HostingIdSchema = z.object({
-  hosting_id: z.number({ required_error: 'hosting_id is required' }).positive(),
+export const HostingIdSchema = input({
+  hosting_id: id('hosting_id'),
 });
 
-export const SiteIdSchema = z.object({
-  hosting_id: z.number().positive(),
-  site_id: z.number({ required_error: 'site_id is required' }).positive(),
+export const SiteIdSchema = input({
+  hosting_id: id('hosting_id'),
+  site_id: id('site_id'),
 });
 
 // The API expects `domain` and `directory`. `fqdn` and `path` are accepted as
 // deprecated aliases for backward compatibility with earlier versions of this tool.
-export const CreateSiteSchema = z
-  .object({
-    hosting_id: z.number().positive(),
-    domain: z.string().min(1, 'domain cannot be empty').optional(),
-    directory: z.string().min(1, 'directory cannot be empty').optional(),
-    fqdn: z.string().min(1, 'fqdn cannot be empty').optional(),
-    path: z.string().min(1, 'path cannot be empty').optional(),
-    php_version: z.string().optional(),
-  })
+export const CreateSiteSchema = input({
+  hosting_id: id('hosting_id'),
+  domain: z.string().min(1, 'domain cannot be empty').optional(),
+  directory: z.string().min(1, 'directory cannot be empty').optional(),
+  fqdn: z.string().min(1, 'fqdn cannot be empty').optional(),
+  path: z.string().min(1, 'path cannot be empty').optional(),
+  php_version: z.string().optional(),
+})
   .refine((site) => site.domain !== undefined || site.fqdn !== undefined, {
     message: 'domain is required',
     path: ['domain'],
@@ -84,9 +134,9 @@ export const CreateSiteSchema = z
     };
   });
 
-export const UpdateSiteSchema = z.object({
-  hosting_id: z.number().positive(),
-  site_id: z.number().positive(),
+export const UpdateSiteSchema = input({
+  hosting_id: id('hosting_id'),
+  site_id: id('site_id'),
   path: z.string().optional(),
   php_version: z.string().optional(),
 });
@@ -94,13 +144,13 @@ export const UpdateSiteSchema = z.object({
 export const DeleteSiteSchema = SiteIdSchema;
 
 // Database schemas
-export const DatabaseIdSchema = z.object({
-  hosting_id: z.number().positive(),
-  database_id: z.number({ required_error: 'database_id is required' }).positive(),
+export const DatabaseIdSchema = input({
+  hosting_id: id('hosting_id'),
+  database_id: id('database_id'),
 });
 
-export const CreateDatabaseSchema = z.object({
-  hosting_id: z.number().positive(),
+export const CreateDatabaseSchema = input({
+  hosting_id: id('hosting_id'),
   name: z.string({ required_error: 'name is required' }).min(1, 'database name cannot be empty'),
   charset: z.string().optional(),
 });
@@ -108,40 +158,48 @@ export const CreateDatabaseSchema = z.object({
 export const DeleteDatabaseSchema = DatabaseIdSchema;
 
 // kDrive schemas
-export const DriveIdSchema = z.object({
-  drive_id: z.number({ required_error: 'drive_id is required' }).positive(),
+export const DriveIdSchema = input({
+  drive_id: id('drive_id'),
 });
 
 // Swiss Backup schemas
-export const BackupIdSchema = z.object({
-  backup_id: z.number({ required_error: 'backup_id is required' }).positive(),
+export const BackupIdSchema = input({
+  backup_id: id('backup_id'),
 });
 
 // VPS schemas
-export const VpsIdSchema = z.object({
-  vps_id: z.number({ required_error: 'vps_id is required' }).positive(),
+export const VpsIdSchema = input({
+  vps_id: id('vps_id'),
 });
 
 // Dedicated Server schemas
-export const ServerIdSchema = z.object({
-  server_id: z.number({ required_error: 'server_id is required' }).positive(),
+export const ServerIdSchema = input({
+  server_id: id('server_id'),
 });
 
 // Certificate schemas
-export const CertificateIdSchema = z.object({
-  certificate_id: z.number({ required_error: 'certificate_id is required' }).positive(),
+export const CertificateIdSchema = input({
+  certificate_id: id('certificate_id'),
 });
 
 // Invoice schemas
-export const InvoiceIdSchema = z.object({
-  account_id: z.number().positive(),
-  invoice_id: z.number({ required_error: 'invoice_id is required' }).positive(),
+export const InvoiceIdSchema = input({
+  account_id: id('account_id'),
+  invoice_id: id('invoice_id'),
 });
 
-// Generic API call schema
-export const ApiCallSchema = z.object({
+// Generic API call schema. The endpoint is a plain path: the query goes in
+// query_params, and "." or ".." segments, written out or as %2e (which fetch
+// would resolve to another route than the one shown), are refused.
+export const ApiCallSchema = input({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
-  endpoint: z.string({ required_error: 'endpoint is required' }).startsWith('/', 'endpoint must start with /'),
+  endpoint: z.string({ required_error: 'endpoint is required' })
+    .startsWith('/', 'endpoint must start with /')
+    .regex(/^\/[^?#\s\\]*$/, 'endpoint is a path without query, fragment, spaces or backslashes; put parameters in query_params')
+    .refine(
+      (path) => path.split('/').every((s) => notOnlyDots(s.replace(/%2e/gi, '.'))),
+      'endpoint must not contain "." or ".." segments',
+    ),
   body: z.record(z.unknown()).optional(),
   query_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
@@ -149,148 +207,143 @@ export const ApiCallSchema = z.object({
 // Domain extras
 export const GetDomainNameserversSchema = DomainNameSchema;
 
-export const UpdateDomainNameserversSchema = z.object({
-  domain: z.string().min(1),
+export const UpdateDomainNameserversSchema = input({
+  domain: domainName,
   nameservers: z.array(z.object({
     host: z.string().min(1),
     ip: z.string().optional(),
-  })).min(1),
+  }).strict()).min(1),
 });
 
-export const RenewDomainSchema = z.object({
-  domain: z.string().min(1),
+export const RenewDomainSchema = input({
+  domain: domainName,
   duration: z.number().int().positive(),
 });
 
 // Cron jobs
-export const CronJobIdSchema = z.object({
-  hosting_id: z.number().positive(),
-  cron_id: z.number({ required_error: 'cron_id is required' }).positive(),
+export const CronJobIdSchema = input({
+  hosting_id: id('hosting_id'),
+  cron_id: id('cron_id'),
 });
 
-export const CreateCronJobSchema = z.object({
-  hosting_id: z.number().positive(),
+export const CreateCronJobSchema = input({
+  hosting_id: id('hosting_id'),
   command: z.string({ required_error: 'command is required' }).min(1),
   schedule: z.string({ required_error: 'schedule is required' }).min(1),
   description: z.string().optional(),
 });
 
-export const UpdateCronJobSchema = z.object({
-  hosting_id: z.number().positive(),
-  cron_id: z.number().positive(),
+export const UpdateCronJobSchema = input({
+  hosting_id: id('hosting_id'),
+  cron_id: id('cron_id'),
   command: z.string().optional(),
   schedule: z.string().optional(),
   description: z.string().optional(),
 });
 
 // FTP accounts
-export const FtpAccountIdSchema = z.object({
-  hosting_id: z.number().positive(),
-  ftp_id: z.number({ required_error: 'ftp_id is required' }).positive(),
+export const FtpAccountIdSchema = input({
+  hosting_id: id('hosting_id'),
+  ftp_id: id('ftp_id'),
 });
 
-export const CreateFtpAccountSchema = z.object({
-  hosting_id: z.number().positive(),
+export const CreateFtpAccountSchema = input({
+  hosting_id: id('hosting_id'),
   login: z.string({ required_error: 'login is required' }).min(1),
   password: z.string({ required_error: 'password is required' }).min(8),
   home_directory: z.string().optional(),
 });
 
-export const UpdateFtpAccountSchema = z.object({
-  hosting_id: z.number().positive(),
-  ftp_id: z.number().positive(),
+export const UpdateFtpAccountSchema = input({
+  hosting_id: id('hosting_id'),
+  ftp_id: id('ftp_id'),
   password: z.string().min(8).optional(),
   home_directory: z.string().optional(),
   is_active: z.boolean().optional(),
 });
 
-// kDrive file ops
-export const KDriveFileIdSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
+// kDrive file ops (constraints from the published OpenAPI document)
+export const KDriveFileIdSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
 });
 
-export const ListKDriveFilesSchema = z.object({
-  drive_id: z.number().positive(),
-  parent_id: z.number().positive().optional(),
+/** The kDrive listings take between 5 and 1000 entries per page. */
+const kdriveLimit = z.number().int().min(5).max(1000);
+
+export const ListKDriveFilesSchema = input({
+  drive_id: id('drive_id'),
+  parent_id: id('parent_id').optional(),
   cursor: z.string().min(1).optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
+  limit: kdriveLimit.optional(),
   type: z.enum(['file', 'dir']).optional(),
 });
 
-export const SearchKDriveFilesSchema = z.object({
-  drive_id: z.number().positive(),
+export const SearchKDriveFilesSchema = input({
+  drive_id: id('drive_id'),
   query: z.string({ required_error: 'query is required' }).min(1),
-  directory_id: z.number().positive().optional(),
+  directory_id: id('directory_id').optional(),
   depth: z.enum(['unlimited', 'child']).optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
+  limit: kdriveLimit.optional(),
 });
 
-export const CreateKDriveDirectorySchema = z.object({
-  drive_id: z.number().positive(),
+export const CreateKDriveDirectorySchema = input({
+  drive_id: id('drive_id'),
   name: z.string({ required_error: 'name is required' }).min(1),
-  parent_id: z.number().positive().optional(),
+  parent_id: id('parent_id').optional(),
 });
 
-export const MoveOrCopyKDriveFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
-  destination_directory_id: z.number({ required_error: 'destination_directory_id is required' }).positive(),
+export const MoveOrCopyKDriveFileSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
+  destination_directory_id: id('destination_directory_id'),
 });
 
-export const RenameKDriveFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
+export const RenameKDriveFileSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
   name: z.string({ required_error: 'name is required' }).min(1),
 });
 
-export const ShareKDriveFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
-  right: z.enum(['public', 'password', 'inherit']).optional(),
-  valid_until: z.string().optional(),
-});
+// The link endpoint requires `right` (public or password) and takes
+// `valid_until` as a Unix timestamp; a password link needs its password.
+export const ShareKDriveFileSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
+  right: z.enum(['public', 'password']).default('public'),
+  password: z.string().min(1).optional(),
+  valid_until: unixTime.optional(),
+}).refine(
+  (link) => (link.right === 'password') === (link.password !== undefined),
+  { message: 'password is required with right "password", and only then', path: ['password'] },
+);
 
 // kDrive extras
-export const KDriveTrashSchema = z.object({
-  drive_id: z.number().positive(),
+export const KDriveTrashSchema = DriveIdSchema;
+
+export const KDriveRestoreFileSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
+  destination_directory_id: id('destination_directory_id').optional(),
 });
 
-export const KDriveRestoreFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
-  destination_directory_id: z.number().positive().optional(),
-});
-
-export const KDriveActivitySchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive().optional(),
+export const KDriveActivitySchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id').optional(),
   lang: z.enum(KDRIVE_LANGS).optional(),
 });
 
-export const KDriveFavoritesSchema = z.object({
-  drive_id: z.number().positive(),
-});
+export const KDriveFavoritesSchema = DriveIdSchema;
 
-export const KDriveFavoriteFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
-});
-
-export const KDriveFileVersionsSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
-});
-
-export const DownloadKDriveFileSchema = z.object({
-  drive_id: z.number().positive(),
-  file_id: z.number().positive(),
+export const DownloadKDriveFileSchema = input({
+  drive_id: id('drive_id'),
+  file_id: id('file_id'),
   max_chars: z.number().int().min(1).max(200_000).optional(),
 });
 
-export const UploadKDriveFileSchema = z.object({
-  drive_id: z.number().positive(),
-  directory_id: z.number().positive().optional(),
+export const UploadKDriveFileSchema = input({
+  drive_id: id('drive_id'),
+  directory_id: id('directory_id').optional(),
   file_name: z.string({ required_error: 'file_name is required' })
     .min(1)
     .max(255)
@@ -304,45 +357,47 @@ export const UploadKDriveFileSchema = z.object({
 );
 
 // kChat schemas
-export const KChatTeamIdSchema = z.object({
-  team_id: z.string({ required_error: 'team_id is required' }).min(1),
+export const KChatTeamIdSchema = input({
+  team_id: kchatId('team_id'),
 });
 
-export const KChatChannelIdSchema = z.object({
-  channel_id: z.string({ required_error: 'channel_id is required' }).min(1),
+export const KChatChannelIdSchema = input({
+  channel_id: kchatId('channel_id'),
 });
 
-export const KChatPostIdSchema = z.object({
-  post_id: z.string({ required_error: 'post_id is required' }).min(1),
+export const KChatPostIdSchema = input({
+  post_id: kchatId('post_id'),
 });
 
-export const CreateKChatPostSchema = z.object({
-  channel_id: z.string({ required_error: 'channel_id is required' }).min(1),
+export const CreateKChatPostSchema = input({
+  channel_id: kchatId('channel_id'),
   message: z.string({ required_error: 'message is required' }).min(1),
-  root_id: z.string().optional(),
+  root_id: kchatId('root_id').optional(),
 });
 
-export const SearchKChatPostsSchema = z.object({
-  team_id: z.string({ required_error: 'team_id is required' }).min(1),
+export const SearchKChatPostsSchema = input({
+  team_id: kchatId('team_id'),
   terms: z.string({ required_error: 'terms is required' }).min(1),
   is_or_search: z.boolean().optional(),
 });
 
-export const CreateKChatDirectChannelSchema = z.object({
-  user_ids: z.array(z.string().min(1)).min(2).max(2),
+// An array of exactly two, not a tuple: a tuple's JSON Schema (`items` as an
+// array) is not valid in the JSON Schema 2020-12 that MCP clients expect.
+export const CreateKChatDirectChannelSchema = input({
+  user_ids: z.array(kchatId('user_ids[]')).length(2, 'user_ids holds exactly two user ids'),
 });
 
-export const SearchKChatUsersSchema = z.object({
+export const SearchKChatUsersSchema = input({
   term: z.string({ required_error: 'term is required' }).min(1),
 });
 
-export const ListKChatUsersSchema = z.object({
-  in_team_id: z.string().optional(),
-  in_channel_id: z.string().optional(),
+export const ListKChatUsersSchema = input({
+  in_team_id: kchatId('in_team_id').optional(),
+  in_channel_id: kchatId('in_channel_id').optional(),
 });
 
-export const KChatGetChannelPostsSchema = z.object({
-  channel_id: z.string({ required_error: 'channel_id is required' }).min(1),
+export const KChatGetChannelPostsSchema = input({
+  channel_id: kchatId('channel_id'),
   page: z.number().int().min(0).optional(),
   per_page: z.number().int().min(1).max(200).optional(),
 });
@@ -355,4 +410,39 @@ export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.ou
     throw new Error(`Validation error: ${errors}`);
   }
   return result.data;
+}
+
+/**
+ * The input schema a client sees: types, limits, enums and required keys come
+ * from the zod schema that validates the call, so the two cannot disagree;
+ * the descriptions come from the tool's definition.
+ */
+export function toInputSchema(schema: z.ZodTypeAny, defined: Tool['inputSchema']): Tool['inputSchema'] {
+  const { $schema: _draft, ...json } = zodToJsonSchema(schema, { $refStrategy: 'none' }) as {
+    $schema?: string;
+    properties?: Record<string, Record<string, unknown>>;
+    [key: string]: unknown;
+  };
+  const docs = (defined.properties ?? {}) as Record<string, { description?: unknown }>;
+  const properties = Object.fromEntries(
+    Object.entries(json.properties ?? {}).map(([key, property]) => {
+      const description = docs[key]?.description;
+      return [key, typeof description === 'string' && property.description === undefined ? { ...property, description } : property];
+    }),
+  );
+  return { ...json, type: 'object', properties };
+}
+
+/** A tool's input schema, and what the tool does with the input once validated. */
+export interface ToolHandler<Ctx> {
+  schema: z.ZodTypeAny;
+  run(input: z.output<z.ZodTypeAny>, ctx: Ctx): Promise<unknown>;
+}
+
+/** Pairs a schema with its handler, which then receives the validated, typed input. */
+export function handler<Ctx, S extends z.ZodTypeAny>(
+  schema: S,
+  run: (input: z.output<S>, ctx: Ctx) => Promise<unknown>,
+): ToolHandler<Ctx> {
+  return { schema, run };
 }

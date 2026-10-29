@@ -21,11 +21,14 @@ This is an MCP (Model Context Protocol) server that provides tools for interacti
 ```
 src/
 ├── index.ts              # Entry point: reads the environment, picks the transport
-├── server.ts             # MCP server factory, tool definitions and handlers
+├── server.ts             # MCP server factory, tool definitions and handler maps
+├── policy.ts             # Annotations, read-only mode, which tools need approval
+├── confirm.ts            # Asking the person (MCP elicitation) before those tools run
 ├── infomaniak-client.ts  # Infomaniak API client with typed methods
 ├── kchat-client.ts       # kChat (Mattermost-compatible) client, optional
+├── mail-tools.ts         # Mail hosting tools: definitions, schemas, handlers
 ├── imap-tools.ts         # Reading mail over IMAP, read-only, optional
-├── schemas.ts            # Zod schemas for tool inputs
+├── schemas.ts            # Zod schemas for tool inputs, validate(), toInputSchema()
 └── transports/
     ├── stdio.ts          # Default transport (Claude Desktop, Claude Code)
     └── http.ts           # Streamable HTTP transport (Express)
@@ -52,6 +55,13 @@ npm run inspector    # Test with MCP Inspector (requires INFOMANIAK_API_TOKEN en
 - Transport-agnostic: `src/transports/stdio.ts` (default) or `src/transports/http.ts`
 - Requires `INFOMANIAK_API_TOKEN` environment variable
 - Each tool maps to one or more `InfomaniakClient` methods
+- A call goes: read-only policy → `validate()` once against the tool's zod schema → approval (`confirm.ts`) when `confirmationReason()` says so → the handler, which receives the typed, validated input
+- The `inputSchema` clients see is derived from the zod schema (`toInputSchema`); the literal in `toolDefinitions` carries the descriptions, and `src/tool-schemas.test.ts` holds it to the zod schema
+
+### Safety (`src/policy.ts`, `src/confirm.ts`)
+- Hints by verb; `destructiveHint` is true for anything not purely additive (update/move/rename too)
+- 35 tools need approval on every call: the destructive ones, the `SENSITIVE` additive ones (money, DNS, cron, FTP, share links, forwarding, kChat posts) and `infomaniak_api_call`. The exact list is pinned in `src/tool-schemas.test.ts`
+- They carry `_meta["anthropic/requiresUserInteraction"]` (Claude Code prompts even in auto mode) and, with `INFOMANIAK_CONFIRM=elicitation` (default), the server asks through elicitation and refuses on anything but an explicit yes
 
 ### API Client (`src/infomaniak-client.ts`)
 - Base URL: `https://api.infomaniak.com`
@@ -88,14 +98,18 @@ npm run inspector    # Test with MCP Inspector (requires INFOMANIAK_API_TOKEN en
 
 ### Adding a New Tool
 
-1. Add tool definition to the `tools` array in `src/server.ts` with:
-   - `name`: Prefixed with `infomaniak_`
+1. Add the tool definition to `toolDefinitions` in `src/server.ts` with:
+   - `name`: Prefixed with `infomaniak_`, starting with a verb `src/policy.ts` knows (startup fails otherwise)
    - `description`: Clear description of what it does
-   - `inputSchema`: JSON Schema for parameters
+   - `inputSchema`: the parameters with their descriptions (its structure must match the zod schema)
 
-2. Add the handler in the `switch` statement in `CallToolRequestSchema` handler
+2. Add its zod schema in `src/schemas.ts` with `input({...})` (strict), `id()` for ids and `domainName` for domains
 
-3. If needed, add corresponding method to `InfomaniakClient` class with proper TypeScript types
+3. Add the handler to `apiHandlers` (or `kchatHandlers`) as `on(Schema, (v, { client }) => ...)`: it receives the validated input
+
+4. If needed, add the method to `InfomaniakClient`, wrapping every string that goes into a path in `seg()`
+
+5. Decide whether it needs approval: destructive verbs ask by default; an additive tool that reaches outside the account goes in `SENSITIVE`. Update the pinned lists in `src/tool-schemas.test.ts`
 
 ### API Endpoint Patterns
 
