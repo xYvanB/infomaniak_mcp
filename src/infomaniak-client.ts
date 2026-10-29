@@ -814,7 +814,9 @@ export class InfomaniakClient {
 
   // Endpoint paths for listing, search, directories, moves, links, trash,
   // versions and activities follow Infomaniak's official kDrive MCP server
-  // (github.com/Infomaniak/mcp-server-kdrive). The root directory has id 1.
+  // (github.com/Infomaniak/mcp-server-kdrive); file details, copies,
+  // favorites and drive activity use the /3 paths of the published OpenAPI
+  // document. The root directory has id 1.
   async listKDriveFiles(
     driveId: number,
     parentId: number = KDRIVE_ROOT_ID,
@@ -828,7 +830,7 @@ export class InfomaniakClient {
   }
 
   async getKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('GET', `/2/drive/${driveId}/files/${fileId}`);
+    return this.request<ApiResponse<KDriveFile>>('GET', `/3/drive/${driveId}/files/${fileId}`);
   }
 
   async searchKDriveFiles(
@@ -854,7 +856,7 @@ export class InfomaniakClient {
   }
 
   async copyKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/${fileId}/copy`, { destination_directory_id: destinationDirectoryId });
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${fileId}/copy/${destinationDirectoryId}`);
   }
 
   async renameKDriveFile(driveId: number, fileId: number, name: string): Promise<ApiResponse<KDriveFile>> {
@@ -889,12 +891,12 @@ export class InfomaniakClient {
   async getKDriveActivity(driveId: number, fileId?: number): Promise<ApiResponse<KDriveActivity[]>> {
     const path = fileId
       ? `/3/drive/${driveId}/files/${fileId}/activities`
-      : `/2/drive/${driveId}/activity`;
+      : `/3/drive/${driveId}/activities`;
     return this.request<ApiResponse<KDriveActivity[]>>('GET', path);
   }
 
   async listKDriveFavorites(driveId: number): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/favorites`);
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/favorites`);
   }
 
   async addKDriveFavorite(driveId: number, fileId: number): Promise<ApiResponse<void>> {

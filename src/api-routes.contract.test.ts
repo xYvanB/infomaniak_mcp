@@ -62,12 +62,13 @@ function documentedPathsMatching(template: string): string[] {
  * Routes this client calls that the published document does not have, as of
  * the recording date. They may be legacy endpoints that still answer, or
  * endpoints that moved (domains are under /2/domains, products under
- * /1/accounts/{id}/products, Swiss Backup under /1/swiss_backups, parts of
- * kDrive under /3/drive). Each is a known gap, not a verified route: it is
- * listed here so that the suite stays green on what is known and goes red the
- * day a listed route becomes documented — that is the moment to verify it and
- * take it off the list. The mail routes were in this list until 2026-10-10,
- * when they were rewritten on the documented ones and checked live.
+ * /1/accounts/{id}/products, Swiss Backup under /1/swiss_backups). Each is a
+ * known gap, not a verified route: it is listed here so that the suite stays
+ * green on what is known and goes red the day a listed route becomes
+ * documented — that is the moment to verify it and take it off the list. The
+ * mail routes were in this list until 2026-10-10, when they were rewritten on
+ * the documented ones and checked live; the kDrive routes until 2026-10-29,
+ * when they moved to the documented paths (not yet checked live).
  */
 export const UNDOCUMENTED_ROUTES: ReadonlySet<string> = new Set([
   "DELETE /1/domain/${domain}/dns/record/${recordId}",
@@ -100,9 +101,6 @@ export const UNDOCUMENTED_ROUTES: ReadonlySet<string> = new Set([
   "GET /1/web/${hostingId}/ftp",
   "GET /1/web/${hostingId}/site",
   "GET /1/web/${hostingId}/site/${siteId}",
-  "GET /2/drive/${driveId}/activity",
-  "GET /2/drive/${driveId}/files/${fileId}",
-  "GET /2/drive/${driveId}/files/favorites",
   "POST /1/dedicated/${serverId}/reboot",
   "POST /1/domain/${domain}/dns/record",
   "POST /1/domain/${domain}/renew",
@@ -113,7 +111,6 @@ export const UNDOCUMENTED_ROUTES: ReadonlySet<string> = new Set([
   "POST /1/web/${hostingId}/database",
   "POST /1/web/${hostingId}/ftp",
   "POST /1/web/${hostingId}/site",
-  "POST /2/drive/${driveId}/files/${fileId}/copy",
   "PUT /1/domain/${domain}/dns/record/${recordId}",
   "PUT /1/domain/${domain}/nameserver",
   "PUT /1/web/${hostingId}/cron/${cronId}",

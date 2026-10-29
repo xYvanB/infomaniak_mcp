@@ -668,5 +668,28 @@ describe('InfomaniakClient', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+
+    it('copies a file with the destination in the path', async () => {
+      okJson();
+      await client.copyKDriveFile(42, 5, 9);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/5/copy/9',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('reads file details, favorites and drive activity on the /3 paths', async () => {
+      okJson();
+      await client.getKDriveFile(42, 5);
+      okJson();
+      await client.listKDriveFavorites(42);
+      okJson();
+      await client.getKDriveActivity(42);
+      expect(mockFetch.mock.calls.slice(-3).map((call) => call[0])).toEqual([
+        'https://api.infomaniak.com/3/drive/42/files/5',
+        'https://api.infomaniak.com/3/drive/42/files/favorites',
+        'https://api.infomaniak.com/3/drive/42/activities',
+      ]);
+    });
   });
 });
