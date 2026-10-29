@@ -12,7 +12,7 @@ import {
   Tool,
   TextContent,
 } from "@modelcontextprotocol/sdk/types.js";
-import { InfomaniakClient, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
+import { InfomaniakClient, KDRIVE_LANGS, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
 import { mailTools, MAIL_TOOL_NAMES, handleMailTool } from "./mail-tools.js";
 import { annotate, assertAllowed, PolicyRefusal, visibleTools } from "./policy.js";
@@ -934,7 +934,15 @@ export const tools: Tool[] = [
   {
     name: "infomaniak_get_kdrive_activity",
     description: "Get activity log for a kDrive or a specific file",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number", description: "Optional: filter by file" } }, required: ["drive_id"] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        file_id: { type: "number", description: "Optional: filter by file" },
+        lang: { type: "string", enum: [...KDRIVE_LANGS], description: "Language of the drive-wide activity feed (default en); ignored with file_id" },
+      },
+      required: ["drive_id"],
+    },
   },
   {
     name: "infomaniak_add_kdrive_favorite",
@@ -1451,7 +1459,7 @@ async function handleToolCall(
 
     case "infomaniak_get_kdrive_activity": {
       const validated = validate(KDriveActivitySchema, args);
-      return client.getKDriveActivity(validated.drive_id, validated.file_id);
+      return client.getKDriveActivity(validated.drive_id, validated.file_id, validated.lang);
     }
 
     case "infomaniak_add_kdrive_favorite": {

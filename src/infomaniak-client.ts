@@ -327,6 +327,10 @@ const seg = (value: string | number): string => encodeURIComponent(String(value)
 /** kDrive's root directory always has file id 1. */
 export const KDRIVE_ROOT_ID = 1;
 
+/** Languages the kDrive activity feed is written in. */
+export const KDRIVE_LANGS = ['en', 'fr', 'de', 'it', 'es'] as const;
+export type KDriveLang = (typeof KDRIVE_LANGS)[number];
+
 class TokenBucket {
   private tokens: number;
   private lastRefill: number;
@@ -888,11 +892,12 @@ export class InfomaniakClient {
     return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/3/drive/${driveId}/files/${fileId}/versions`);
   }
 
-  async getKDriveActivity(driveId: number, fileId?: number): Promise<ApiResponse<KDriveActivity[]>> {
-    const path = fileId
-      ? `/3/drive/${driveId}/files/${fileId}/activities`
-      : `/3/drive/${driveId}/activities`;
-    return this.request<ApiResponse<KDriveActivity[]>>('GET', path);
+  async getKDriveActivity(driveId: number, fileId?: number, lang: KDriveLang = 'en'): Promise<ApiResponse<KDriveActivity[]>> {
+    if (fileId) {
+      return this.request<ApiResponse<KDriveActivity[]>>('GET', `/3/drive/${driveId}/files/${fileId}/activities`);
+    }
+    // The drive-wide feed answers 422 "The lang field is required" without it.
+    return this.request<ApiResponse<KDriveActivity[]>>('GET', `/3/drive/${driveId}/activities`, undefined, { lang });
   }
 
   async listKDriveFavorites(driveId: number): Promise<ApiResponse<KDriveFile[]>> {

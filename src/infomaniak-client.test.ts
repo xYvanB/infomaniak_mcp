@@ -688,8 +688,17 @@ describe('InfomaniakClient', () => {
       expect(mockFetch.mock.calls.slice(-3).map((call) => call[0])).toEqual([
         'https://api.infomaniak.com/3/drive/42/files/5',
         'https://api.infomaniak.com/3/drive/42/files/favorites',
-        'https://api.infomaniak.com/3/drive/42/activities',
+        'https://api.infomaniak.com/3/drive/42/activities?lang=en',
       ]);
+    });
+
+    it('asks for the drive-wide activity feed in the requested language', async () => {
+      okJson();
+      await client.getKDriveActivity(42, undefined, 'it');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/activities?lang=it',
+        expect.objectContaining({ method: 'GET' })
+      );
     });
   });
 });

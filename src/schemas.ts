@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { KDRIVE_LANGS } from './infomaniak-client.js';
 
 // Common schemas
 export const AccountIdSchema = z.object({
@@ -264,6 +265,7 @@ export const KDriveRestoreFileSchema = z.object({
 export const KDriveActivitySchema = z.object({
   drive_id: z.number().positive(),
   file_id: z.number().positive().optional(),
+  lang: z.enum(KDRIVE_LANGS).optional(),
 });
 
 export const KDriveFavoritesSchema = z.object({
