@@ -15,6 +15,7 @@ import { createMcpServer, ServerOptions } from "../server.js";
  *
  * @param client - The Infomaniak API client
  * @param kchatClient - Optional kChat API client
+ * @param imapReader - Optional IMAP reader for the mailbox
  */
 export async function startStdioServer(
   client: InfomaniakClient,

@@ -16,6 +16,7 @@ import { InfomaniakClient } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
 import { mailTools, MAIL_TOOL_NAMES, handleMailTool } from "./mail-tools.js";
 import { annotate, assertAllowed, PolicyRefusal, visibleTools } from "./policy.js";
+import { ImapReader, imapTools, IMAP_TOOL_NAMES, handleImapTool } from "./imap-tools.js";
 import {
   validate,
   AccountIdSchema,
@@ -1478,15 +1479,20 @@ async function handleKChatToolCall(
  * Create and configure an MCP server instance
  *
  * @param client - The Infomaniak API client to use for tool calls
+ * @param kchatClient - Optional kChat API client
+ * @param imapReader - Optional IMAP reader; without it the mail-reading tools are not listed
  * @returns Configured MCP Server instance
  */
 export interface ServerOptions {
   /** Only read-only tools are listed and callable (INFOMANIAK_READ_ONLY). */
   readOnly?: boolean;
+  /** Reads the mailbox over IMAP; without it the mail-reading tools are not listed. */
+  imapReader?: ImapReader | null;
 }
 
 /** Every tool with its annotations; built once, and startup fails if one cannot be classified. */
 export const annotatedTools: Tool[] = annotate(tools);
+const annotatedImapTools: Tool[] = annotate(imapTools);
 
 export function createMcpServer(
   client: InfomaniakClient,
@@ -1494,7 +1500,9 @@ export function createMcpServer(
   options: ServerOptions = {},
 ): Server {
   const readOnly = options.readOnly ?? false;
-  const offered = visibleTools(annotatedTools, readOnly);
+  const imapReader = options.imapReader ?? null;
+  const known = imapReader ? [...annotatedTools, ...annotatedImapTools] : annotatedTools;
+  const offered = visibleTools(known, readOnly);
   const server = new Server(
     {
       name: "infomaniak-mcp-server",
@@ -1517,8 +1525,10 @@ export function createMcpServer(
     const { name, arguments: args } = request.params;
 
     try {
-      assertAllowed(name, annotatedTools, readOnly);
-      const result = await handleToolCall(client, name, args, kchatClient);
+      assertAllowed(name, known, readOnly);
+      const result = IMAP_TOOL_NAMES.has(name)
+        ? await handleImapTool(imapReader, name, args)
+        : await handleToolCall(client, name, args, kchatClient);
 
       const content: TextContent[] = [
         {

@@ -24,6 +24,7 @@ src/
 ├── server.ts             # MCP server factory, tool definitions and handlers
 ├── infomaniak-client.ts  # Infomaniak API client with typed methods
 ├── kchat-client.ts       # kChat (Mattermost-compatible) client, optional
+├── imap-tools.ts         # Reading mail over IMAP, read-only, optional
 ├── schemas.ts            # Zod schemas for tool inputs
 └── transports/
     ├── stdio.ts          # Default transport (Claude Desktop, Claude Code)

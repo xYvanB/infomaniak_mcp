@@ -23,6 +23,7 @@ import { localhostHostValidation } from "@modelcontextprotocol/sdk/server/middle
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { InfomaniakClient } from "../infomaniak-client.js";
 import { KChatClient } from "../kchat-client.js";
+import { ImapReader } from "../imap-tools.js";
 import { createMcpServer, ServerOptions } from "../server.js";
 
 export interface HttpServerOptions {
@@ -38,6 +39,8 @@ export interface HttpServerOptions {
   authToken?: string;
   /** Only read-only tools are listed and callable (INFOMANIAK_READ_ONLY) */
   readOnly?: boolean;
+  /** Reads the mailbox over IMAP; without it the mail-reading tools are not listed */
+  imapReader?: ImapReader | null;
 }
 
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -170,7 +173,7 @@ export function createHttpApp(
       });
 
       // Create and connect the MCP server for this session
-      const server = createMcpServer(client, kchatClient, { readOnly: options.readOnly });
+      const server = createMcpServer(client, kchatClient, { readOnly: options.readOnly, imapReader: options.imapReader });
       await server.connect(transport);
 
       // Store session immediately if stateful mode (before handleRequest)
