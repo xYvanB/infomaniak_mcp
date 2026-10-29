@@ -8,21 +8,23 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { InfomaniakClient } from "../infomaniak-client.js";
 import { KChatClient } from "../kchat-client.js";
-import { createMcpServer } from "../server.js";
+import { createMcpServer, ServerOptions } from "../server.js";
 
 /**
  * Start the MCP server with stdio transport
  *
  * @param client - The Infomaniak API client
  * @param kchatClient - Optional kChat API client
+ * @param imapReader - Optional IMAP reader for the mailbox
  */
 export async function startStdioServer(
   client: InfomaniakClient,
   kchatClient?: KChatClient | null,
+  options: ServerOptions = {},
 ): Promise<void> {
-  const server = createMcpServer(client, kchatClient);
+  const server = createMcpServer(client, kchatClient, options);
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
-  console.error("Infomaniak MCP Server running on stdio");
+  console.error(`Infomaniak MCP Server running on stdio${options.readOnly ? " (read-only)" : ""}`);
 }

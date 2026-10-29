@@ -10,15 +10,23 @@
  * - INFOMANIAK_API_TOKEN: Your Infomaniak API token (required)
  * - MCP_TRANSPORT: Transport mode - 'stdio' (default) or 'http'
  * - MCP_PORT: HTTP port when using http transport (default: 3000)
+ * - MCP_HOST: HTTP host to bind to (default: 127.0.0.1)
+ * - MCP_AUTH_TOKEN: Bearer token required on /mcp (required when MCP_HOST is not loopback)
+ * - MCP_CORS_ORIGINS: Comma-separated list of allowed CORS origins (default: CORS disabled)
  * - MCP_STATELESS: Set to 'true' for stateless mode (default: false)
+ * - INFOMANIAK_READ_ONLY: Set to 'true' to offer and allow read-only tools only
+ * - INFOMANIAK_IMAP_USER, INFOMANIAK_IMAP_PASSWORD or INFOMANIAK_IMAP_PASSWORD_FILE:
+ *   optional, to read the mailbox over IMAP (see src/imap-tools.ts)
  *
  * Get your API token from: https://manager.infomaniak.com/v3/ng/accounts/token/list
  */
 
 import { InfomaniakClient } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
+import { ImapReader, imapConfigFromEnv } from "./imap-tools.js";
 import { startStdioServer } from "./transports/stdio.js";
 import { startHttpServer } from "./transports/http.js";
+import { readOnlyFromEnv } from "./policy.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.INFOMANIAK_API_TOKEN;
@@ -39,17 +47,34 @@ const kchatClient = (kchatHost && kchatToken)
   ? new KChatClient({ host: kchatHost, token: kchatToken })
   : null;
 
+// Optionally read the mailbox over IMAP; a user without a password stops the server here
+let imapReader: ImapReader | null = null;
+try {
+  const imapConfig = imapConfigFromEnv();
+  imapReader = imapConfig ? new ImapReader(imapConfig) : null;
+} catch (error) {
+  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
 // Get transport configuration from environment
 const transport = process.env.MCP_TRANSPORT || "stdio";
 const port = parseInt(process.env.PORT || process.env.MCP_PORT || "3000", 10);
 const stateless = process.env.MCP_STATELESS === "true";
+const host = process.env.MCP_HOST || undefined;
+const authToken = process.env.MCP_AUTH_TOKEN || undefined;
+const corsOrigins = (process.env.MCP_CORS_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+const readOnly = readOnlyFromEnv();
 
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(client, { port, stateless }, kchatClient);
+    await startHttpServer(client, { port, host, stateless, authToken, corsOrigins, readOnly, imapReader }, kchatClient);
   } else if (transport === "stdio") {
-    await startStdioServer(client, kchatClient);
+    await startStdioServer(client, kchatClient, { readOnly, imapReader });
   } else {
     console.error(`Error: Unknown transport '${transport}'. Use 'stdio' or 'http'.`);
     process.exit(1);

@@ -141,6 +141,42 @@ describe('InfomaniakClient', () => {
       );
     });
 
+    it('should include field-level validation errors in the message', async () => {
+      const fieldErrors = [
+        { code: 'validation_failed', description: 'The domain field is required.', context: { attribute: 'domain' } },
+      ];
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        headers: { get: () => null },
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              result: 'error',
+              error: { code: 'validation_failed', description: 'Validation failed', errors: fieldErrors },
+            })
+          ),
+      });
+
+      await expect(client.ping()).rejects.toThrow(
+        `Infomaniak API Error (422): Validation failed ${JSON.stringify(fieldErrors)}`
+      );
+    });
+
+    it('should not append an empty validation error list', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        headers: { get: () => null },
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ error: { code: 'validation_failed', description: 'Validation failed', errors: [] } })
+          ),
+      });
+
+      await expect(client.ping()).rejects.toThrow(/^Infomaniak API Error \(422\): Validation failed$/);
+    });
+
     it('should handle non-JSON error response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -319,55 +355,6 @@ describe('InfomaniakClient', () => {
     });
   });
 
-  describe('Mail Services', () => {
-    it('should list mail services with account_id query param', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            result: 'success',
-            data: [{ id: 1, customer_name: 'example.com' }],
-          }),
-      });
-
-      await client.getMailServices(456);
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.infomaniak.com/1/mail?account_id=456',
-        expect.objectContaining({ method: 'GET' })
-      );
-    });
-
-    it('should create a mailbox', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            result: 'success',
-            data: { id: 789, mailbox_name: 'info', email: 'info@example.com' },
-          }),
-      });
-
-      await client.createMailbox(123, {
-        mailbox_name: 'info',
-        password: 'securepassword123',
-        max_size: 5000,
-      });
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.infomaniak.com/1/mail/123/mailbox',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            mailbox_name: 'info',
-            password: 'securepassword123',
-            max_size: 5000,
-          }),
-        })
-      );
-    });
-  });
-
   describe('Web Hosting', () => {
     it('should list sites for a hosting', async () => {
       mockFetch.mockResolvedValueOnce({
@@ -387,28 +374,40 @@ describe('InfomaniakClient', () => {
       );
     });
 
-    it('should create a site', async () => {
+    it('should create a site with domain and directory', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
           Promise.resolve({
             result: 'success',
-            data: { id: 50, fqdn: 'newsite.com' },
+            data: { id: 50 },
           }),
       });
 
       await client.createSite(100, {
-        fqdn: 'newsite.com',
-        php_version: '8.2',
+        domain: 'example.com',
+        directory: '/sites/example.com',
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.infomaniak.com/1/web/100/site',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ fqdn: 'newsite.com', php_version: '8.2' }),
+          body: JSON.stringify({ domain: 'example.com', directory: '/sites/example.com' }),
         })
       );
+    });
+
+    it('should use a timeout longer than the default for site creation', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'success', data: { id: 50 } }),
+      });
+
+      await client.createSite(100, { domain: 'example.com', directory: '/sites/example.com' });
+
+      expect(timeoutSpy).toHaveBeenCalledWith(120_000);
     });
   });
 
@@ -498,6 +497,206 @@ describe('InfomaniakClient', () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.infomaniak.com/1/search?q=test&limit=10',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+  });
+
+  describe('retry policy', () => {
+    const serverError = () => ({
+      ok: false,
+      status: 503,
+      headers: { get: () => null },
+      text: () => Promise.resolve('Service Unavailable'),
+    });
+    const rateLimited = () => ({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => (name === 'Retry-After' ? '1' : null) },
+      text: () => Promise.resolve('Rate limit exceeded'),
+    });
+    const success = () => ({
+      ok: true,
+      json: () => Promise.resolve({ result: 'success', data: {} }),
+    });
+
+    let retryingClient: InfomaniakClient;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      retryingClient = new InfomaniakClient({ token: 'test-token-123', maxAttempts: 3 });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should retry GET requests after a 5xx error', async () => {
+      mockFetch
+        .mockResolvedValueOnce(serverError())
+        .mockResolvedValueOnce(serverError())
+        .mockResolvedValueOnce(success());
+
+      const result = retryingClient.ping();
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toEqual({ result: 'success', data: {} });
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it.each(['POST', 'PUT', 'PATCH', 'DELETE'] as const)(
+      'should not retry %s requests after a 5xx error',
+      async (method) => {
+        mockFetch.mockResolvedValue(serverError());
+
+        const result = retryingClient.call(method, '/1/example', { key: 'value' });
+        const assertion = expect(result).rejects.toThrow('Infomaniak API Error (503)');
+        await vi.runAllTimersAsync();
+
+        await assertion;
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('should not retry a domain renewal after a 5xx error', async () => {
+      mockFetch.mockResolvedValue(serverError());
+
+      const result = retryingClient.renewDomain('example.com', 1);
+      const assertion = expect(result).rejects.toThrow('Infomaniak API Error (503)');
+      await vi.runAllTimersAsync();
+
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should retry POST requests after a 429 error', async () => {
+      mockFetch
+        .mockResolvedValueOnce(rateLimited())
+        .mockResolvedValueOnce(success());
+
+      const result = retryingClient.call('POST', '/1/example', { key: 'value' });
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toEqual({ result: 'success', data: {} });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not retry 4xx errors other than 429', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        headers: { get: () => null },
+        text: () => Promise.resolve('Not Found'),
+      });
+
+      const result = retryingClient.ping();
+      const assertion = expect(result).rejects.toThrow('Infomaniak API Error (404)');
+      await vi.runAllTimersAsync();
+
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('kDrive endpoints', () => {
+    function okJson() {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'success', data: [] }),
+      });
+    }
+
+    it('lists the root directory (id 1) when no parent is given', async () => {
+      okJson();
+      await client.listKDriveFiles(42);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/1/files',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('passes the pagination cursor and type filter when listing', async () => {
+      okJson();
+      await client.listKDriveFiles(42, 7, { cursor: 'abc', type: 'file' });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/7/files?cursor=abc&type%5B%5D=file',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('creates a directory under its parent', async () => {
+      okJson();
+      await client.createKDriveDirectory(42, { name: 'Clients', parent_id: 7 });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/7/directory',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'Clients' }) })
+      );
+    });
+
+    it('uploads raw bytes with the target directory and conflict mode in the query', async () => {
+      okJson();
+      await client.uploadKDriveFile(42, {
+        directoryId: 7,
+        fileName: 'offer.txt',
+        content: new TextEncoder().encode('hello'),
+        conflict: 'rename',
+      });
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toBe(
+        'https://api.infomaniak.com/3/drive/42/upload?directory_id=7&file_name=offer.txt&total_size=5&conflict=rename'
+      );
+      expect(init).toMatchObject({ method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
+    });
+
+    it('refuses a download larger than the cap before reading it', async () => {
+      const cancel = vi.fn();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-length': '2000' }),
+        body: { cancel },
+        arrayBuffer: () => Promise.reject(new Error('body must not be read')),
+      });
+      await expect(client.downloadKDriveFile(42, 5, 1000)).rejects.toThrow(/too large/);
+      expect(cancel).toHaveBeenCalled();
+    });
+
+    it('moves a file with the destination in the path', async () => {
+      okJson();
+      await client.moveKDriveFile(42, 5, 9);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/5/move/9',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('copies a file with the destination in the path', async () => {
+      okJson();
+      await client.copyKDriveFile(42, 5, 9);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/5/copy/9',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('reads file details, favorites and drive activity on the /3 paths', async () => {
+      okJson();
+      await client.getKDriveFile(42, 5);
+      okJson();
+      await client.listKDriveFavorites(42);
+      okJson();
+      await client.getKDriveActivity(42);
+      expect(mockFetch.mock.calls.slice(-3).map((call) => call[0])).toEqual([
+        'https://api.infomaniak.com/3/drive/42/files/5',
+        'https://api.infomaniak.com/3/drive/42/files/favorites',
+        'https://api.infomaniak.com/3/drive/42/activities?lang=en',
+      ]);
+    });
+
+    it('asks for the drive-wide activity feed in the requested language', async () => {
+      okJson();
+      await client.getKDriveActivity(42, undefined, 'it');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/activities?lang=it',
         expect.objectContaining({ method: 'GET' })
       );
     });

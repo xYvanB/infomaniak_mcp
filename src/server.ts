@@ -12,8 +12,21 @@ import {
   Tool,
   TextContent,
 } from "@modelcontextprotocol/sdk/types.js";
-import { InfomaniakClient } from "./infomaniak-client.js";
+import { InfomaniakClient, KDRIVE_LANGS, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
+import { mailTools, MAIL_TOOL_NAMES, handleMailTool } from "./mail-tools.js";
+import { annotate, assertAllowed, PolicyRefusal, visibleTools } from "./policy.js";
+import { ImapReader, imapTools, IMAP_TOOL_NAMES, handleImapTool } from "./imap-tools.js";
+import {
+  ToolContent,
+  MAX_BINARY_BYTES,
+  MAX_TEXT_CHARS,
+  DEFAULT_TEXT_CHARS,
+  binaryToContent,
+  decodeBase64,
+  isTextLike,
+  textFileToContent,
+} from "./content.js";
 import {
   validate,
   AccountIdSchema,
@@ -23,12 +36,6 @@ import {
   CreateDnsRecordSchema,
   UpdateDnsRecordSchema,
   DeleteDnsRecordSchema,
-  MailIdSchema,
-  MailboxIdSchema,
-  CreateMailboxSchema,
-  UpdateMailboxSchema,
-  DeleteMailboxSchema,
-  MailboxAliasSchema,
   HostingIdSchema,
   SiteIdSchema,
   CreateSiteSchema,
@@ -47,8 +54,6 @@ import {
   GetDomainNameserversSchema,
   UpdateDomainNameserversSchema,
   RenewDomainSchema,
-  EmailRedirectionIdSchema,
-  CreateEmailRedirectionSchema,
   CronJobIdSchema,
   CreateCronJobSchema,
   UpdateCronJobSchema,
@@ -65,7 +70,9 @@ import {
   KDriveTrashSchema,
   KDriveActivitySchema,
   KDriveFavoritesSchema,
-  UpdateMailboxAutoresponderSchema,
+  KDriveRestoreFileSchema,
+  DownloadKDriveFileSchema,
+  UploadKDriveFileSchema,
   KChatTeamIdSchema,
   KChatChannelIdSchema,
   KChatPostIdSchema,
@@ -81,6 +88,7 @@ import {
  * Tool definitions for the Infomaniak MCP server
  */
 export const tools: Tool[] = [
+  ...mailTools,
   // Profile & Account Tools
   {
     name: "infomaniak_ping",
@@ -299,207 +307,6 @@ export const tools: Tool[] = [
     },
   },
 
-  // Mail Service Tools
-  {
-    name: "infomaniak_list_mail_services",
-    description: "List all mail services for an account",
-    inputSchema: {
-      type: "object",
-      properties: {
-        account_id: {
-          type: "number",
-          description: "The account ID",
-        },
-      },
-      required: ["account_id"],
-    },
-  },
-  {
-    name: "infomaniak_get_mail_service",
-    description: "Get detailed information about a mail service",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-      },
-      required: ["mail_id"],
-    },
-  },
-  {
-    name: "infomaniak_list_mailboxes",
-    description: "List all mailboxes for a mail service",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-      },
-      required: ["mail_id"],
-    },
-  },
-  {
-    name: "infomaniak_get_mailbox",
-    description: "Get detailed information about a specific mailbox",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_id: {
-          type: "number",
-          description: "The mailbox ID",
-        },
-      },
-      required: ["mail_id", "mailbox_id"],
-    },
-  },
-  {
-    name: "infomaniak_create_mailbox",
-    description: "Create a new mailbox",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_name: {
-          type: "string",
-          description: "The mailbox name (local part of email address)",
-        },
-        password: {
-          type: "string",
-          description: "The mailbox password",
-        },
-        max_size: {
-          type: "number",
-          description: "Maximum mailbox size in MB",
-        },
-      },
-      required: ["mail_id", "mailbox_name", "password"],
-    },
-  },
-  {
-    name: "infomaniak_update_mailbox",
-    description: "Update a mailbox (password or size)",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_id: {
-          type: "number",
-          description: "The mailbox ID",
-        },
-        password: {
-          type: "string",
-          description: "New password (optional)",
-        },
-        max_size: {
-          type: "number",
-          description: "New maximum size in MB (optional)",
-        },
-      },
-      required: ["mail_id", "mailbox_id"],
-    },
-  },
-  {
-    name: "infomaniak_delete_mailbox",
-    description: "Delete a mailbox",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_id: {
-          type: "number",
-          description: "The mailbox ID to delete",
-        },
-      },
-      required: ["mail_id", "mailbox_id"],
-    },
-  },
-  {
-    name: "infomaniak_add_mailbox_alias",
-    description: "Add an email alias to a mailbox",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_id: {
-          type: "number",
-          description: "The mailbox ID",
-        },
-        alias: {
-          type: "string",
-          description: "The alias email address",
-        },
-      },
-      required: ["mail_id", "mailbox_id", "alias"],
-    },
-  },
-  {
-    name: "infomaniak_delete_mailbox_alias",
-    description: "Delete an email alias from a mailbox",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: {
-          type: "number",
-          description: "The mail service ID",
-        },
-        mailbox_id: {
-          type: "number",
-          description: "The mailbox ID",
-        },
-        alias: {
-          type: "string",
-          description: "The alias email address to delete",
-        },
-      },
-      required: ["mail_id", "mailbox_id", "alias"],
-    },
-  },
-
-  {
-    name: "infomaniak_list_email_redirections",
-    description: "List all email redirections for a mail service",
-    inputSchema: { type: "object", properties: { mail_id: { type: "number", description: "The mail service ID" } }, required: ["mail_id"] },
-  },
-  {
-    name: "infomaniak_create_email_redirection",
-    description: "Create an email redirection",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mail_id: { type: "number" },
-        from: { type: "string", description: "Source email address" },
-        to: { type: "array", items: { type: "string" }, description: "Destination email address(es)" },
-        keep_copy: { type: "boolean" },
-      },
-      required: ["mail_id", "from", "to"],
-    },
-  },
-  {
-    name: "infomaniak_delete_email_redirection",
-    description: "Delete an email redirection",
-    inputSchema: { type: "object", properties: { mail_id: { type: "number" }, redirection_id: { type: "number" } }, required: ["mail_id", "redirection_id"] },
-  },
-
   // Web Hosting Tools
   {
     name: "infomaniak_list_web_hostings",
@@ -563,7 +370,7 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_create_site",
-    description: "Create a new site on a web hosting",
+    description: "Create a new site on a web hosting. This call can take more than 30 seconds.",
     inputSchema: {
       type: "object",
       properties: {
@@ -571,20 +378,28 @@ export const tools: Tool[] = [
           type: "number",
           description: "The web hosting ID",
         },
-        fqdn: {
+        domain: {
           type: "string",
-          description: "The fully qualified domain name for the site",
+          description: "The fully qualified domain name for the site (e.g. example.com)",
         },
-        path: {
+        directory: {
           type: "string",
-          description: "The document root path (optional)",
+          description: "The site directory on the hosting (optional, defaults to /sites/<domain>)",
         },
         php_version: {
           type: "string",
           description: "PHP version to use (optional)",
         },
+        fqdn: {
+          type: "string",
+          description: "Deprecated alias of domain",
+        },
+        path: {
+          type: "string",
+          description: "Deprecated alias of directory",
+        },
       },
-      required: ["hosting_id", "fqdn"],
+      required: ["hosting_id"],
     },
   },
   {
@@ -788,8 +603,18 @@ export const tools: Tool[] = [
 
   {
     name: "infomaniak_list_kdrive_files",
-    description: "List files in a kDrive directory",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, parent_id: { type: "number", description: "Parent directory ID (omit for root)" } }, required: ["drive_id"] },
+    description: "List files in a kDrive directory. When the result has has_more=true, call again with its cursor for the next page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        parent_id: { type: "number", description: "Parent directory ID (omit for the root directory, id 1)" },
+        cursor: { type: "string", description: "Cursor from the previous page" },
+        limit: { type: "number", description: "Max entries per page" },
+        type: { type: "string", enum: ["file", "dir"], description: "Only files or only directories" },
+      },
+      required: ["drive_id"],
+    },
   },
   {
     name: "infomaniak_get_kdrive_file",
@@ -798,8 +623,18 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_search_kdrive_files",
-    description: "Search for files in a kDrive",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, query: { type: "string" } }, required: ["drive_id", "query"] },
+    description: "Search for files in a kDrive, optionally within one directory",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        query: { type: "string" },
+        directory_id: { type: "number", description: "Only search inside this directory" },
+        depth: { type: "string", enum: ["unlimited", "child"], description: "With directory_id: whole subtree (unlimited) or direct children (child)" },
+        limit: { type: "number", description: "Max results" },
+      },
+      required: ["drive_id", "query"],
+    },
   },
   {
     name: "infomaniak_create_kdrive_directory",
@@ -1083,8 +918,8 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_restore_kdrive_file",
-    description: "Restore a file from the kDrive trash",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" } }, required: ["drive_id", "file_id"] },
+    description: "Restore a file from the kDrive trash, optionally into another directory",
+    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" }, destination_directory_id: { type: "number", description: "Optional: directory to restore into" } }, required: ["drive_id", "file_id"] },
   },
   {
     name: "infomaniak_empty_kdrive_trash",
@@ -1099,7 +934,15 @@ export const tools: Tool[] = [
   {
     name: "infomaniak_get_kdrive_activity",
     description: "Get activity log for a kDrive or a specific file",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number", description: "Optional: filter by file" } }, required: ["drive_id"] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        file_id: { type: "number", description: "Optional: filter by file" },
+        lang: { type: "string", enum: [...KDRIVE_LANGS], description: "Language of the drive-wide activity feed (default en); ignored with file_id" },
+      },
+      required: ["drive_id"],
+    },
   },
   {
     name: "infomaniak_add_kdrive_favorite",
@@ -1112,38 +955,38 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" } }, required: ["drive_id", "file_id"] },
   },
   {
-    name: "infomaniak_list_kdrive_favorites",
-    description: "List favorite files in a kDrive",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" } }, required: ["drive_id"] },
-  },
-
-  // Mail Extras
-  {
-    name: "infomaniak_get_mailbox_autoresponder",
-    description: "Get the autoresponder (out-of-office) settings for a mailbox",
-    inputSchema: { type: "object", properties: { mail_id: { type: "number" }, mailbox_id: { type: "number" } }, required: ["mail_id", "mailbox_id"] },
-  },
-  {
-    name: "infomaniak_update_mailbox_autoresponder",
-    description: "Enable or update the autoresponder for a mailbox",
+    name: "infomaniak_download_kdrive_file",
+    description: "Read a kDrive file's content. Text files (txt, md, csv, json, html, ...) are returned as text, truncated to max_chars. Other files up to 10 MB are returned as an image or embedded resource (base64), for example PDFs or Office documents.",
     inputSchema: {
       type: "object",
       properties: {
-        mail_id: { type: "number" },
-        mailbox_id: { type: "number" },
-        enabled: { type: "boolean", description: "Enable or disable the autoresponder" },
-        subject: { type: "string", description: "Auto-reply subject" },
-        body: { type: "string", description: "Auto-reply message body" },
-        from_date: { type: "string", description: "Start date (ISO 8601)" },
-        to_date: { type: "string", description: "End date (ISO 8601)" },
+        drive_id: { type: "number", description: "The kDrive ID" },
+        file_id: { type: "number", description: "The file ID" },
+        max_chars: { type: "number", description: `Maximum characters returned for text files (default ${DEFAULT_TEXT_CHARS}, max ${MAX_TEXT_CHARS})` },
       },
-      required: ["mail_id", "mailbox_id", "enabled"],
+      required: ["drive_id", "file_id"],
     },
   },
   {
-    name: "infomaniak_list_mailbox_folders",
-    description: "List folders in a mailbox",
-    inputSchema: { type: "object", properties: { mail_id: { type: "number" }, mailbox_id: { type: "number" } }, required: ["mail_id", "mailbox_id"] },
+    name: "infomaniak_upload_kdrive_file",
+    description: "Upload a file (max 10 MB) into a kDrive directory. Provide content_text for UTF-8 text or content_base64 for binary content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number", description: "The kDrive ID" },
+        directory_id: { type: "number", description: "Destination directory ID (default: root, id 1)" },
+        file_name: { type: "string", description: "Name of the new file, without path" },
+        content_text: { type: "string", description: "UTF-8 text content" },
+        content_base64: { type: "string", description: "Base64-encoded binary content" },
+        conflict: { type: "string", enum: ["error", "rename", "version"], description: "If a file with that name exists: error, rename (keep both, default) or version (replace, keeping the old content as a version)" },
+      },
+      required: ["drive_id", "file_name"],
+    },
+  },
+  {
+    name: "infomaniak_list_kdrive_favorites",
+    description: "List favorite files in a kDrive",
+    inputSchema: { type: "object", properties: { drive_id: { type: "number" } }, required: ["drive_id"] },
   },
 
   // kChat Tools
@@ -1258,6 +1101,9 @@ async function handleToolCall(
   args: Record<string, unknown> | undefined,
   kchatClient?: KChatClient | null,
 ): Promise<unknown> {
+  if (MAIL_TOOL_NAMES.has(name)) {
+    return handleMailTool(client, name, args);
+  }
   if (name.startsWith("infomaniak_kchat_")) {
     if (!kchatClient) throw new Error("kChat is not configured. Set KCHAT_HOST and KCHAT_TOKEN environment variables.");
     return handleKChatToolCall(kchatClient, name, args);
@@ -1344,84 +1190,6 @@ async function handleToolCall(
     }
 
     // Mail Services
-    case "infomaniak_list_mail_services": {
-      const validated = validate(AccountIdSchema, args);
-      return client.getMailServices(validated.account_id);
-    }
-
-    case "infomaniak_get_mail_service": {
-      const validated = validate(MailIdSchema, args);
-      return client.getMailService(validated.mail_id);
-    }
-
-    case "infomaniak_list_mailboxes": {
-      const validated = validate(MailIdSchema, args);
-      return client.getMailboxes(validated.mail_id);
-    }
-
-    case "infomaniak_get_mailbox": {
-      const validated = validate(MailboxIdSchema, args);
-      return client.getMailbox(validated.mail_id, validated.mailbox_id);
-    }
-
-    case "infomaniak_create_mailbox": {
-      const validated = validate(CreateMailboxSchema, args);
-      return client.createMailbox(validated.mail_id, {
-        mailbox_name: validated.mailbox_name,
-        password: validated.password,
-        max_size: validated.max_size,
-      });
-    }
-
-    case "infomaniak_update_mailbox": {
-      const validated = validate(UpdateMailboxSchema, args);
-      return client.updateMailbox(
-        validated.mail_id,
-        validated.mailbox_id,
-        {
-          password: validated.password,
-          max_size: validated.max_size,
-        }
-      );
-    }
-
-    case "infomaniak_delete_mailbox": {
-      const validated = validate(DeleteMailboxSchema, args);
-      return client.deleteMailbox(validated.mail_id, validated.mailbox_id);
-    }
-
-    case "infomaniak_add_mailbox_alias": {
-      const validated = validate(MailboxAliasSchema, args);
-      return client.addMailboxAlias(
-        validated.mail_id,
-        validated.mailbox_id,
-        validated.alias
-      );
-    }
-
-    case "infomaniak_delete_mailbox_alias": {
-      const validated = validate(MailboxAliasSchema, args);
-      return client.deleteMailboxAlias(
-        validated.mail_id,
-        validated.mailbox_id,
-        validated.alias
-      );
-    }
-
-    case "infomaniak_list_email_redirections": {
-      const validated = validate(MailIdSchema, args);
-      return client.getEmailRedirections(validated.mail_id);
-    }
-    case "infomaniak_create_email_redirection": {
-      const validated = validate(CreateEmailRedirectionSchema, args);
-      return client.createEmailRedirection(validated.mail_id, { from: validated.from, to: validated.to, keep_copy: validated.keep_copy });
-    }
-    case "infomaniak_delete_email_redirection": {
-      const validated = validate(EmailRedirectionIdSchema, args);
-      return client.deleteEmailRedirection(validated.mail_id, validated.redirection_id);
-    }
-
-    // Web Hosting
     case "infomaniak_list_web_hostings": {
       const validated = validate(AccountIdSchema, args);
       return client.getWebHostings(validated.account_id);
@@ -1445,8 +1213,8 @@ async function handleToolCall(
     case "infomaniak_create_site": {
       const validated = validate(CreateSiteSchema, args);
       return client.createSite(validated.hosting_id, {
-        fqdn: validated.fqdn,
-        path: validated.path,
+        domain: validated.domain,
+        directory: validated.directory,
         php_version: validated.php_version,
       });
     }
@@ -1538,7 +1306,11 @@ async function handleToolCall(
 
     case "infomaniak_list_kdrive_files": {
       const validated = validate(ListKDriveFilesSchema, args);
-      return client.listKDriveFiles(validated.drive_id, validated.parent_id);
+      return client.listKDriveFiles(validated.drive_id, validated.parent_id, {
+        cursor: validated.cursor,
+        limit: validated.limit,
+        type: validated.type,
+      });
     }
     case "infomaniak_get_kdrive_file": {
       const validated = validate(KDriveFileIdSchema, args);
@@ -1546,7 +1318,11 @@ async function handleToolCall(
     }
     case "infomaniak_search_kdrive_files": {
       const validated = validate(SearchKDriveFilesSchema, args);
-      return client.searchKDriveFiles(validated.drive_id, validated.query);
+      return client.searchKDriveFiles(validated.drive_id, validated.query, {
+        directoryId: validated.directory_id,
+        depth: validated.depth,
+        limit: validated.limit,
+      });
     }
     case "infomaniak_create_kdrive_directory": {
       const validated = validate(CreateKDriveDirectorySchema, args);
@@ -1667,8 +1443,8 @@ async function handleToolCall(
     }
 
     case "infomaniak_restore_kdrive_file": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.restoreKDriveFile(validated.drive_id, validated.file_id);
+      const validated = validate(KDriveRestoreFileSchema, args);
+      return client.restoreKDriveFile(validated.drive_id, validated.file_id, validated.destination_directory_id);
     }
 
     case "infomaniak_empty_kdrive_trash": {
@@ -1683,7 +1459,7 @@ async function handleToolCall(
 
     case "infomaniak_get_kdrive_activity": {
       const validated = validate(KDriveActivitySchema, args);
-      return client.getKDriveActivity(validated.drive_id, validated.file_id);
+      return client.getKDriveActivity(validated.drive_id, validated.file_id, validated.lang);
     }
 
     case "infomaniak_add_kdrive_favorite": {
@@ -1696,33 +1472,49 @@ async function handleToolCall(
       return client.removeKDriveFavorite(validated.drive_id, validated.file_id);
     }
 
+    case "infomaniak_download_kdrive_file": {
+      const validated = validate(DownloadKDriveFileSchema, args);
+      const { data: file } = await client.getKDriveFile(validated.drive_id, validated.file_id);
+      if (file.type === "dir") throw new Error(`${file.name} is a directory; use infomaniak_list_kdrive_files`);
+      if (file.size > MAX_BINARY_BYTES) {
+        throw new Error(`${file.name} is ${file.size} bytes; files over ${MAX_BINARY_BYTES} bytes cannot be returned`);
+      }
+      const download = await client.downloadKDriveFile(validated.drive_id, validated.file_id, MAX_BINARY_BYTES);
+      const downloaded = {
+        filename: file.name,
+        mimeType: file.mime_type ?? download.contentType,
+        bytes: download.bytes,
+      };
+      const metadata = { drive_id: validated.drive_id, file_id: file.id };
+      return new ToolContent(
+        isTextLike(downloaded.mimeType, downloaded.filename)
+          ? textFileToContent(downloaded, validated.max_chars ?? DEFAULT_TEXT_CHARS, metadata)
+          : binaryToContent(downloaded, `infomaniak-kdrive://${validated.drive_id}/${file.id}`, metadata),
+      );
+    }
+
+    case "infomaniak_upload_kdrive_file": {
+      const validated = validate(UploadKDriveFileSchema, args);
+      const content = validated.content_text !== undefined
+        ? new TextEncoder().encode(validated.content_text)
+        : decodeBase64(validated.content_base64 ?? "");
+      if (content.byteLength > MAX_BINARY_BYTES) {
+        throw new Error(`Upload is ${content.byteLength} bytes; the limit is ${MAX_BINARY_BYTES} bytes`);
+      }
+      return client.uploadKDriveFile(validated.drive_id, {
+        directoryId: validated.directory_id ?? KDRIVE_ROOT_ID,
+        fileName: validated.file_name,
+        content,
+        conflict: validated.conflict,
+      });
+    }
+
     case "infomaniak_list_kdrive_favorites": {
       const validated = validate(KDriveFavoritesSchema, args);
       return client.listKDriveFavorites(validated.drive_id);
     }
 
     // Mail Extras
-    case "infomaniak_get_mailbox_autoresponder": {
-      const validated = validate(MailboxIdSchema, args);
-      return client.getMailboxAutoresponder(validated.mail_id, validated.mailbox_id);
-    }
-
-    case "infomaniak_update_mailbox_autoresponder": {
-      const validated = validate(UpdateMailboxAutoresponderSchema, args);
-      return client.updateMailboxAutoresponder(validated.mail_id, validated.mailbox_id, {
-        enabled: validated.enabled,
-        subject: validated.subject,
-        body: validated.body,
-        from_date: validated.from_date,
-        to_date: validated.to_date,
-      });
-    }
-
-    case "infomaniak_list_mailbox_folders": {
-      const validated = validate(MailboxIdSchema, args);
-      return client.listMailboxFolders(validated.mail_id, validated.mailbox_id);
-    }
-
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1802,9 +1594,30 @@ async function handleKChatToolCall(
  * Create and configure an MCP server instance
  *
  * @param client - The Infomaniak API client to use for tool calls
+ * @param kchatClient - Optional kChat API client
+ * @param imapReader - Optional IMAP reader; without it the mail-reading tools are not listed
  * @returns Configured MCP Server instance
  */
-export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatClient | null): Server {
+export interface ServerOptions {
+  /** Only read-only tools are listed and callable (INFOMANIAK_READ_ONLY). */
+  readOnly?: boolean;
+  /** Reads the mailbox over IMAP; without it the mail-reading tools are not listed. */
+  imapReader?: ImapReader | null;
+}
+
+/** Every tool with its annotations; built once, and startup fails if one cannot be classified. */
+export const annotatedTools: Tool[] = annotate(tools);
+const annotatedImapTools: Tool[] = annotate(imapTools);
+
+export function createMcpServer(
+  client: InfomaniakClient,
+  kchatClient?: KChatClient | null,
+  options: ServerOptions = {},
+): Server {
+  const readOnly = options.readOnly ?? false;
+  const imapReader = options.imapReader ?? null;
+  const known = imapReader ? [...annotatedTools, ...annotatedImapTools] : annotatedTools;
+  const offered = visibleTools(known, readOnly);
   const server = new Server(
     {
       name: "infomaniak-mcp-server",
@@ -1819,7 +1632,7 @@ export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatCli
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return { tools };
+    return { tools: offered };
   });
 
   // Handle tool calls
@@ -1827,7 +1640,11 @@ export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatCli
     const { name, arguments: args } = request.params;
 
     try {
-      const result = await handleToolCall(client, name, args, kchatClient);
+      assertAllowed(name, known, readOnly);
+      const result = IMAP_TOOL_NAMES.has(name)
+        ? await handleImapTool(imapReader, name, args)
+        : await handleToolCall(client, name, args, kchatClient);
+      if (result instanceof ToolContent) return { content: result.content };
 
       const content: TextContent[] = [
         {
@@ -1839,11 +1656,12 @@ export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatCli
       return { content };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const prefix = error instanceof PolicyRefusal ? "Refused" : "Error";
       return {
         content: [
           {
             type: "text",
-            text: `Error: ${errorMessage}`,
+            text: `${prefix}: ${errorMessage}`,
           },
         ],
         isError: true,

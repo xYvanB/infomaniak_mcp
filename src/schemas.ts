@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { KDRIVE_LANGS } from './infomaniak-client.js';
 
 // Common schemas
 export const AccountIdSchema = z.object({
@@ -48,38 +49,6 @@ export const GetDomainSchema = z.object({
   domain: z.string().min(1),
 });
 
-// Mail schemas
-export const MailIdSchema = z.object({
-  mail_id: z.number({ required_error: 'mail_id is required' }).positive(),
-});
-
-export const MailboxIdSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_id: z.number({ required_error: 'mailbox_id is required' }).positive(),
-});
-
-export const CreateMailboxSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_name: z.string({ required_error: 'mailbox_name is required' }).min(1, 'mailbox_name cannot be empty'),
-  password: z.string({ required_error: 'password is required' }).min(8, 'password must be at least 8 characters'),
-  max_size: z.number().positive().optional(),
-});
-
-export const UpdateMailboxSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_id: z.number().positive(),
-  password: z.string().min(8).optional(),
-  max_size: z.number().positive().optional(),
-});
-
-export const DeleteMailboxSchema = MailboxIdSchema;
-
-export const MailboxAliasSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_id: z.number().positive(),
-  alias: z.string({ required_error: 'alias is required' }).email('alias must be a valid email'),
-});
-
 // Web Hosting schemas
 export const HostingIdSchema = z.object({
   hosting_id: z.number({ required_error: 'hosting_id is required' }).positive(),
@@ -90,12 +59,30 @@ export const SiteIdSchema = z.object({
   site_id: z.number({ required_error: 'site_id is required' }).positive(),
 });
 
-export const CreateSiteSchema = z.object({
-  hosting_id: z.number().positive(),
-  fqdn: z.string({ required_error: 'fqdn is required' }).min(1, 'fqdn cannot be empty'),
-  path: z.string().optional(),
-  php_version: z.string().optional(),
-});
+// The API expects `domain` and `directory`. `fqdn` and `path` are accepted as
+// deprecated aliases for backward compatibility with earlier versions of this tool.
+export const CreateSiteSchema = z
+  .object({
+    hosting_id: z.number().positive(),
+    domain: z.string().min(1, 'domain cannot be empty').optional(),
+    directory: z.string().min(1, 'directory cannot be empty').optional(),
+    fqdn: z.string().min(1, 'fqdn cannot be empty').optional(),
+    path: z.string().min(1, 'path cannot be empty').optional(),
+    php_version: z.string().optional(),
+  })
+  .refine((site) => site.domain !== undefined || site.fqdn !== undefined, {
+    message: 'domain is required',
+    path: ['domain'],
+  })
+  .transform(({ hosting_id, domain, directory, fqdn, path, php_version }) => {
+    const siteDomain = (domain ?? fqdn) as string;
+    return {
+      hosting_id,
+      domain: siteDomain,
+      directory: directory ?? path ?? `/sites/${siteDomain}`,
+      php_version,
+    };
+  });
 
 export const UpdateSiteSchema = z.object({
   hosting_id: z.number().positive(),
@@ -175,19 +162,6 @@ export const RenewDomainSchema = z.object({
   duration: z.number().int().positive(),
 });
 
-// Email redirections
-export const EmailRedirectionIdSchema = z.object({
-  mail_id: z.number().positive(),
-  redirection_id: z.number({ required_error: 'redirection_id is required' }).positive(),
-});
-
-export const CreateEmailRedirectionSchema = z.object({
-  mail_id: z.number().positive(),
-  from: z.string({ required_error: 'from is required' }).email(),
-  to: z.array(z.string().email()).min(1),
-  keep_copy: z.boolean().optional(),
-});
-
 // Cron jobs
 export const CronJobIdSchema = z.object({
   hosting_id: z.number().positive(),
@@ -239,11 +213,17 @@ export const KDriveFileIdSchema = z.object({
 export const ListKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   parent_id: z.number().positive().optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  type: z.enum(['file', 'dir']).optional(),
 });
 
 export const SearchKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   query: z.string({ required_error: 'query is required' }).min(1),
+  directory_id: z.number().positive().optional(),
+  depth: z.enum(['unlimited', 'child']).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
 });
 
 export const CreateKDriveDirectorySchema = z.object({
@@ -279,11 +259,13 @@ export const KDriveTrashSchema = z.object({
 export const KDriveRestoreFileSchema = z.object({
   drive_id: z.number().positive(),
   file_id: z.number().positive(),
+  destination_directory_id: z.number().positive().optional(),
 });
 
 export const KDriveActivitySchema = z.object({
   drive_id: z.number().positive(),
   file_id: z.number().positive().optional(),
+  lang: z.enum(KDRIVE_LANGS).optional(),
 });
 
 export const KDriveFavoritesSchema = z.object({
@@ -300,21 +282,26 @@ export const KDriveFileVersionsSchema = z.object({
   file_id: z.number().positive(),
 });
 
-// Mail extras
-export const UpdateMailboxAutoresponderSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_id: z.number().positive(),
-  enabled: z.boolean(),
-  subject: z.string().optional(),
-  body: z.string().optional(),
-  from_date: z.string().optional(),
-  to_date: z.string().optional(),
+export const DownloadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  file_id: z.number().positive(),
+  max_chars: z.number().int().min(1).max(200_000).optional(),
 });
 
-export const ListMailboxFoldersSchema = z.object({
-  mail_id: z.number().positive(),
-  mailbox_id: z.number().positive(),
-});
+export const UploadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  directory_id: z.number().positive().optional(),
+  file_name: z.string({ required_error: 'file_name is required' })
+    .min(1)
+    .max(255)
+    .refine((name) => !name.includes('/'), 'file_name must not contain "/"'),
+  content_text: z.string().optional(),
+  content_base64: z.string().optional(),
+  conflict: z.enum(['error', 'rename', 'version']).default('rename'),
+}).refine(
+  (v) => (v.content_text === undefined) !== (v.content_base64 === undefined),
+  'Provide exactly one of content_text or content_base64',
+);
 
 // kChat schemas
 export const KChatTeamIdSchema = z.object({
@@ -361,7 +348,7 @@ export const KChatGetChannelPostsSchema = z.object({
 });
 
 // Helper function to validate and return typed result
-export function validate<T>(schema: z.ZodSchema<T>, data: unknown): T {
+export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
   const result = schema.safeParse(data);
   if (!result.success) {
     const errors = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');

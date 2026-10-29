@@ -12,7 +12,7 @@ export interface InfomaniakConfig {
   baseUrl?: string;
   /** Request timeout in ms (default: 30000) */
   timeoutMs?: number;
-  /** Max retry attempts for 429/5xx errors (default: 3, set 1 to disable retries) */
+  /** Max attempts for 429 errors (any method) and 5xx errors (GET only) (default: 3, set 1 to disable retries) */
   maxAttempts?: number;
 }
 
@@ -25,9 +25,13 @@ export interface PaginationOptions {
 export interface ApiResponse<T = unknown> {
   result: string;
   data: T;
+  /** Cursor-paginated (v3) endpoints: pass `cursor` back to get the next page. */
+  cursor?: string;
+  has_more?: boolean;
   error?: {
     code: string;
     description: string;
+    errors?: unknown[];
   };
 }
 
@@ -56,22 +60,68 @@ export interface DnsRecord {
   priority?: number;
 }
 
-export interface MailService {
+export interface MailHosting {
   id: number;
   account_id: number;
   customer_name: string;
-  nb_mailbox: number;
-  max_mailbox: number;
+  service_name: string;
+  [key: string]: unknown;
 }
 
+/** A mailbox as /1/mail_hostings/{id}/mailboxes returns it (fields beyond these exist). */
 export interface Mailbox {
-  id: number;
-  mail_id: number;
   mailbox_name: string;
-  email: string;
+  mailbox: string;
+  mailbox_idn?: string;
+  note?: string;
+  aliases?: string[];
+  full_aliases?: string[];
+  size?: number;
+  created_at?: number;
+  has_auto_responder?: boolean;
+  has_redirection?: boolean;
+  redirection?: unknown[];
+  has_move_spam?: boolean;
+  has_mail_filtering?: boolean;
+  authorized_senders?: string[];
+  blocked_senders?: string[];
+  is_limited?: boolean;
+  is_free_mail?: boolean;
+  [key: string]: unknown;
+}
+
+export interface CreatedMailbox {
+  mailbox: Mailbox;
+  quota?: number;
+  used?: number;
+  total?: number;
+  existing_user_email?: boolean;
+}
+
+export interface MailboxAliases {
+  enabled_alias: number;
   aliases: string[];
-  size_used: number;
-  max_size: number;
+}
+
+export interface MailboxForwarding {
+  is_enabled: boolean | string;
+  /** sic — the API spells it this way */
+  redirect_adresses: string[];
+  has_dont_deliver: boolean | string;
+  has_forward_spam: boolean | string;
+}
+
+export interface AutoReply {
+  id: number;
+  name: string;
+  message: string;
+  is_active?: boolean;
+  is_recurrent?: boolean;
+  is_visible?: boolean;
+  started_at?: number;
+  ended_at?: number;
+  dont_reply_to?: string[];
+  [key: string]: unknown;
 }
 
 export interface WebHosting {
@@ -128,12 +178,13 @@ export interface DomainNameserver {
 }
 
 export interface EmailRedirection {
-  id: number;
-  mail_id: number;
-  from: string;
-  to: string[];
-  keep_copy: boolean;
-  created_at: string;
+  id: string;
+  name: string;
+  targets: unknown[];
+  state?: string;
+  created_at?: number;
+  updated_at?: number;
+  [key: string]: unknown;
 }
 
 export interface CronJob {
@@ -191,20 +242,16 @@ export interface KDriveActivity {
   created_at: number;
 }
 
-export interface AutoresponderSettings {
-  enabled: boolean;
-  subject?: string;
-  body?: string;
-  from_date?: string;
-  to_date?: string;
-}
 
-export interface MailboxFolder {
-  id: string;
-  name: string;
-  path: string;
-  messages_count: number;
-  unseen_count: number;
+export interface MailboxFolders {
+  folders: { name: string }[];
+  draft_folder?: string;
+  trash_folder?: string;
+  sent_folder?: string;
+  spam_folder?: string;
+  archives_folder?: string;
+  commercials_folder?: string;
+  social_networks_folder?: string;
 }
 
 export interface Vps {
@@ -271,6 +318,19 @@ export interface Product {
   customer_name: string;
 }
 
+/** Site creation is slow on the API side (it can exceed 30s). */
+const CREATE_SITE_TIMEOUT_MS = 120_000;
+
+/** A value that travels as one path segment, and cannot leave it. */
+const seg = (value: string | number): string => encodeURIComponent(String(value));
+
+/** kDrive's root directory always has file id 1. */
+export const KDRIVE_ROOT_ID = 1;
+
+/** Languages the kDrive activity feed is written in. */
+export const KDRIVE_LANGS = ['en', 'fr', 'de', 'it', 'es'] as const;
+export type KDriveLang = (typeof KDRIVE_LANGS)[number];
+
 class TokenBucket {
   private tokens: number;
   private lastRefill: number;
@@ -324,6 +384,7 @@ export class InfomaniakClient {
     path: string,
     body?: unknown,
     queryParams?: Record<string, string | number | boolean | undefined>,
+    timeoutMs: number = this.timeoutMs,
   ): Promise<T> {
     let url = `${this.baseUrl}${path}`;
 
@@ -343,7 +404,7 @@ export class InfomaniakClient {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     };
 
     if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
@@ -359,6 +420,11 @@ export class InfomaniakClient {
         const errorJson = JSON.parse(errorText);
         errorMessage =
           errorJson.error?.description ?? errorJson.message ?? errorText;
+        // Validation errors (e.g. 422) list the offending fields in
+        // `error.errors`; without them the message is just "Validation failed".
+        if (Array.isArray(errorJson.error?.errors) && errorJson.error.errors.length > 0) {
+          errorMessage += ` ${JSON.stringify(errorJson.error.errors)}`;
+        }
       } catch {
         errorMessage = errorText;
       }
@@ -376,11 +442,43 @@ export class InfomaniakClient {
     return (await response.json()) as T;
   }
 
+  /**
+   * Single non-JSON request (binary download or upload). Not retried: an
+   * upload is not idempotent, and downloads are cheap to re-request.
+   */
+  private async rawRequest(
+    method: 'GET' | 'POST',
+    path: string,
+    queryParams?: Record<string, string | number | boolean | undefined>,
+    payload?: { body: Uint8Array; contentType: string },
+  ): Promise<Response> {
+    await this.bucket.take();
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [key, value] of Object.entries(queryParams ?? {})) {
+      if (value !== undefined) url.searchParams.append(key, String(value));
+    }
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
+    if (payload) headers['Content-Type'] = payload.contentType;
+    const response = await fetch(url, {
+      method,
+      headers,
+      // Copy into an ArrayBuffer-backed view, which is what BodyInit accepts.
+      body: payload ? new Uint8Array(payload.body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs * 4),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Infomaniak API Error (${response.status}): ${errorText.slice(0, 500)}`);
+    }
+    return response;
+  }
+
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
     queryParams?: Record<string, string | number | boolean | undefined>,
+    timeoutMs?: number,
   ): Promise<T> {
     await this.bucket.take();
 
@@ -388,12 +486,17 @@ export class InfomaniakClient {
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       try {
-        return await this.executeRequest<T>(method, path, body, queryParams);
+        return await this.executeRequest<T>(method, path, body, queryParams, timeoutMs);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const status = (error as { status?: number }).status;
+        // 429 means the request was rejected before being processed, so it is
+        // always safe to retry. A 5xx on a write may already have been applied
+        // (e.g. a domain renewal or a resource creation), so only reads are
+        // retried after a server error.
         const isRetryable =
-          status === 429 || (status !== undefined && status >= 500);
+          status === 429 ||
+          (method === 'GET' && status !== undefined && status >= 500);
 
         if (!isRetryable || attempt === this.maxAttempts) throw lastError;
 
@@ -480,72 +583,127 @@ export class InfomaniakClient {
     return this.request<ApiResponse<void>>('DELETE', `/1/domain/${domain}/dns/record/${recordId}`);
   }
 
-  // Mail Services
-  async getMailServices(accountId: number): Promise<ApiResponse<MailService[]>> {
-    return this.request<ApiResponse<MailService[]>>('GET', `/1/mail`, undefined, { account_id: accountId });
+  // Mail — on the documented routes: a mail service is a *mail hosting*, a
+  // mailbox is addressed by its name (the part before the @), and every name
+  // travels URL-encoded in its path segment.
+  // The products list filtered on the mail service: checked live on
+  // 2026-10-10, `/2/mail_hostings` answers an empty list for a token that
+  // `/1/products?service_name=email_hosting` answers with the hosting.
+  async getMailHostings(accountId?: number): Promise<ApiResponse<MailHosting[]>> {
+    return this.request<ApiResponse<MailHosting[]>>('GET', `/1/products`, undefined, { service_name: 'email_hosting', account_id: accountId });
   }
 
-  async getMailService(mailId: number): Promise<ApiResponse<MailService>> {
-    return this.request<ApiResponse<MailService>>('GET', `/1/mail/${mailId}`);
+  async getMailboxes(mailHostingId: number, options: { search?: string; page?: number; per_page?: number } = {}): Promise<ApiResponse<Mailbox[]>> {
+    return this.request<ApiResponse<Mailbox[]>>('GET', `/1/mail_hostings/${mailHostingId}/mailboxes`, undefined, options);
   }
 
-  async getMailboxes(mailId: number): Promise<ApiResponse<Mailbox[]>> {
-    return this.request<ApiResponse<Mailbox[]>>('GET', `/1/mail/${mailId}/mailbox`);
+  async getMailbox(mailHostingId: number, mailboxName: string): Promise<ApiResponse<Mailbox>> {
+    return this.request<ApiResponse<Mailbox>>('GET', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}`);
   }
 
-  async getMailbox(mailId: number, mailboxId: number): Promise<ApiResponse<Mailbox>> {
-    return this.request<ApiResponse<Mailbox>>('GET', `/1/mail/${mailId}/mailbox/${mailboxId}`);
-  }
-
-  async createMailbox(mailId: number, mailbox: {
+  async createMailbox(mailHostingId: number, mailbox: {
     mailbox_name: string;
-    password: string;
-    max_size?: number;
+    note?: string;
+    target?: 'current_user' | 'ksuite_user' | 'other_user';
+    link_to_current_user?: boolean;
+  }): Promise<ApiResponse<CreatedMailbox>> {
+    return this.request<ApiResponse<CreatedMailbox>>('POST', `/1/mail_hostings/${mailHostingId}/mailboxes`, mailbox);
+  }
+
+  async updateMailbox(mailHostingId: number, mailboxName: string, changes: {
+    note?: string;
+    has_responder?: boolean;
+    has_move_spam?: boolean;
+    has_mail_filtering?: boolean;
+    authorized_senders?: string[];
+    blocked_senders?: string[];
   }): Promise<ApiResponse<Mailbox>> {
-    return this.request<ApiResponse<Mailbox>>('POST', `/1/mail/${mailId}/mailbox`, mailbox);
+    return this.request<ApiResponse<Mailbox>>('PATCH', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}`, changes);
   }
 
-  async updateMailbox(mailId: number, mailboxId: number, mailbox: {
-    password?: string;
-    max_size?: number;
-  }): Promise<ApiResponse<Mailbox>> {
-    return this.request<ApiResponse<Mailbox>>('PUT', `/1/mail/${mailId}/mailbox/${mailboxId}`, mailbox);
+  async deleteMailbox(mailHostingId: number, mailboxName: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('DELETE', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}`);
   }
 
-  async deleteMailbox(mailId: number, mailboxId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/1/mail/${mailId}/mailbox/${mailboxId}`);
+  async getMailboxAliases(mailHostingId: number, mailboxName: string): Promise<ApiResponse<MailboxAliases>> {
+    return this.request<ApiResponse<MailboxAliases>>('GET', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/aliases`);
   }
 
-  async addMailboxAlias(mailId: number, mailboxId: number, alias: string): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('POST', `/1/mail/${mailId}/mailbox/${mailboxId}/alias`, { alias });
+  async addMailboxAlias(mailHostingId: number, mailboxName: string, alias: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('POST', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/aliases`, { alias });
   }
 
-  async deleteMailboxAlias(mailId: number, mailboxId: number, alias: string): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/1/mail/${mailId}/mailbox/${mailboxId}/alias/${encodeURIComponent(alias)}`);
+  async deleteMailboxAlias(mailHostingId: number, mailboxName: string, alias: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('DELETE', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/aliases/${seg(alias)}`);
   }
 
-  async getEmailRedirections(mailId: number): Promise<ApiResponse<EmailRedirection[]>> {
-    return this.request<ApiResponse<EmailRedirection[]>>('GET', `/1/mail/${mailId}/redirection`);
+  async getMailboxForwarding(mailHostingId: number, mailboxName: string): Promise<ApiResponse<MailboxForwarding>> {
+    return this.request<ApiResponse<MailboxForwarding>>('GET', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/forwarding_addresses`);
   }
 
-  async createEmailRedirection(mailId: number, redirection: { from: string; to: string[]; keep_copy?: boolean }): Promise<ApiResponse<EmailRedirection>> {
-    return this.request<ApiResponse<EmailRedirection>>('POST', `/1/mail/${mailId}/redirection`, redirection);
+  async addMailboxForwarding(mailHostingId: number, mailboxName: string, redirectAddress: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('POST', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/forwarding_addresses`, { redirect_address: redirectAddress });
   }
 
-  async deleteEmailRedirection(mailId: number, redirectionId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/1/mail/${mailId}/redirection/${redirectionId}`);
+  async updateMailboxForwarding(mailHostingId: number, mailboxName: string, changes: {
+    redirect_addresses?: string[];
+    is_enabled?: boolean;
+    has_dont_deliver?: boolean;
+    has_forward_spam?: boolean;
+  }): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('PUT', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/forwarding_addresses`, changes);
   }
 
-  async getMailboxAutoresponder(mailId: number, mailboxId: number): Promise<ApiResponse<AutoresponderSettings>> {
-    return this.request<ApiResponse<AutoresponderSettings>>('GET', `/1/mail/${mailId}/mailbox/${mailboxId}/autoresponder`);
+  async deleteMailboxForwarding(mailHostingId: number, mailboxName: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('DELETE', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/forwarding_addresses`);
   }
 
-  async updateMailboxAutoresponder(mailId: number, mailboxId: number, settings: AutoresponderSettings): Promise<ApiResponse<AutoresponderSettings>> {
-    return this.request<ApiResponse<AutoresponderSettings>>('PUT', `/1/mail/${mailId}/mailbox/${mailboxId}/autoresponder`, settings);
+  async getRedirections(mailHostingId: number): Promise<ApiResponse<EmailRedirection[]>> {
+    return this.request<ApiResponse<EmailRedirection[]>>('GET', `/1/mail_hostings/${mailHostingId}/redirections`);
   }
 
-  async listMailboxFolders(mailId: number, mailboxId: number): Promise<ApiResponse<MailboxFolder[]>> {
-    return this.request<ApiResponse<MailboxFolder[]>>('GET', `/1/mail/${mailId}/mailbox/${mailboxId}/folder`);
+  async createRedirection(mailHostingId: number, redirection: { name: string; targets: string[] }): Promise<ApiResponse<EmailRedirection>> {
+    return this.request<ApiResponse<EmailRedirection>>('POST', `/1/mail_hostings/${mailHostingId}/redirections`, redirection);
+  }
+
+  async deleteRedirection(mailHostingId: number, redirectionId: string): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('DELETE', `/1/mail_hostings/${mailHostingId}/redirections/${seg(redirectionId)}`);
+  }
+
+  async getAutoReplies(mailHostingId: number): Promise<ApiResponse<AutoReply[]>> {
+    return this.request<ApiResponse<AutoReply[]>>('GET', `/1/mail_hostings/${mailHostingId}/auto_replies`);
+  }
+
+  async createAutoReply(mailHostingId: number, autoReply: {
+    name: string;
+    message: string;
+    is_recurrent: boolean;
+    started_at?: number;
+    ended_at?: number;
+    dont_reply_to?: string[];
+    is_visible?: boolean;
+  }): Promise<ApiResponse<AutoReply>> {
+    return this.request<ApiResponse<AutoReply>>('POST', `/1/mail_hostings/${mailHostingId}/auto_replies`, autoReply);
+  }
+
+  async updateAutoReply(mailHostingId: number, autoReplyId: number, changes: {
+    name?: string;
+    message?: string;
+    is_recurrent?: boolean;
+    started_at?: number;
+    ended_at?: number;
+    dont_reply_to?: string[];
+    is_visible?: boolean;
+  }): Promise<ApiResponse<AutoReply>> {
+    return this.request<ApiResponse<AutoReply>>('PATCH', `/1/mail_hostings/${mailHostingId}/auto_replies/${autoReplyId}`, changes);
+  }
+
+  async deleteAutoReply(mailHostingId: number, autoReplyId: number): Promise<ApiResponse<boolean>> {
+    return this.request<ApiResponse<boolean>>('DELETE', `/1/mail_hostings/${mailHostingId}/auto_replies/${autoReplyId}`);
+  }
+
+  async getMailboxFolders(mailHostingId: number, mailboxName: string): Promise<ApiResponse<MailboxFolders>> {
+    return this.request<ApiResponse<MailboxFolders>>('GET', `/1/mail_hostings/${mailHostingId}/mailboxes/${seg(mailboxName)}/auth/folders`);
   }
 
   // Web Hosting
@@ -565,12 +723,25 @@ export class InfomaniakClient {
     return this.request<ApiResponse<Site>>('GET', `/1/web/${hostingId}/site/${siteId}`);
   }
 
+  /**
+   * Create a site on a web hosting.
+   *
+   * The API expects `domain` (the FQDN) and `directory` (the document root,
+   * e.g. `/sites/example.com`). Site creation can take longer than the default
+   * request timeout, so a longer timeout is used for this call.
+   */
   async createSite(hostingId: number, site: {
-    fqdn: string;
-    path?: string;
+    domain: string;
+    directory: string;
     php_version?: string;
   }): Promise<ApiResponse<Site>> {
-    return this.request<ApiResponse<Site>>('POST', `/1/web/${hostingId}/site`, site);
+    return this.request<ApiResponse<Site>>(
+      'POST',
+      `/1/web/${hostingId}/site`,
+      site,
+      undefined,
+      Math.max(this.timeoutMs, CREATE_SITE_TIMEOUT_MS),
+    );
   }
 
   async updateSite(hostingId: number, siteId: number, site: {
@@ -645,31 +816,51 @@ export class InfomaniakClient {
     return this.request<ApiResponse<KDrive>>('GET', `/2/drive/${driveId}`);
   }
 
-  async listKDriveFiles(driveId: number, parentId?: number): Promise<ApiResponse<KDriveFile[]>> {
-    const path = parentId
-      ? `/2/drive/${driveId}/files/${parentId}/files`
-      : `/2/drive/${driveId}/files`;
-    return this.request<ApiResponse<KDriveFile[]>>('GET', path);
+  // Endpoint paths for listing, search, directories, moves, links, trash,
+  // versions and activities follow Infomaniak's official kDrive MCP server
+  // (github.com/Infomaniak/mcp-server-kdrive); file details, copies,
+  // favorites and drive activity use the /3 paths of the published OpenAPI
+  // document. The root directory has id 1.
+  async listKDriveFiles(
+    driveId: number,
+    parentId: number = KDRIVE_ROOT_ID,
+    options: { cursor?: string; limit?: number; type?: 'file' | 'dir' } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/${parentId}/files`, undefined, {
+      cursor: options.cursor,
+      limit: options.limit,
+      'type[]': options.type,
+    });
   }
 
   async getKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('GET', `/2/drive/${driveId}/files/${fileId}`);
+    return this.request<ApiResponse<KDriveFile>>('GET', `/3/drive/${driveId}/files/${fileId}`);
   }
 
-  async searchKDriveFiles(driveId: number, query: string): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/search`, undefined, { query });
+  async searchKDriveFiles(
+    driveId: number,
+    query: string,
+    options: { directoryId?: number; depth?: 'unlimited' | 'child'; limit?: number } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/search`, undefined, {
+      query,
+      directory_id: options.directoryId,
+      depth: options.depth,
+      limit: options.limit,
+    });
   }
 
   async createKDriveDirectory(driveId: number, directory: { name: string; parent_id?: number }): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/directories`, directory);
+    const parentId = directory.parent_id ?? KDRIVE_ROOT_ID;
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${parentId}/directory`, { name: directory.name });
   }
 
   async moveKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/${fileId}/move`, { destination_directory_id: destinationDirectoryId });
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${fileId}/move/${destinationDirectoryId}`);
   }
 
   async copyKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/${fileId}/copy`, { destination_directory_id: destinationDirectoryId });
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${fileId}/copy/${destinationDirectoryId}`);
   }
 
   async renameKDriveFile(driveId: number, fileId: number, name: string): Promise<ApiResponse<KDriveFile>> {
@@ -681,34 +872,36 @@ export class InfomaniakClient {
   }
 
   async shareKDriveFile(driveId: number, fileId: number, options: { right?: string; valid_until?: string } = {}): Promise<ApiResponse<KDriveShareLink>> {
-    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/shareable_link`, options);
+    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/link`, options);
   }
 
   async listKDriveTrash(driveId: number): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/trash`);
   }
 
-  async restoreKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/trash/${fileId}/restore`);
+  async restoreKDriveFile(driveId: number, fileId: number, destinationDirectoryId?: number): Promise<ApiResponse<KDriveFile>> {
+    const body = destinationDirectoryId === undefined ? undefined : { destination_directory_id: destinationDirectoryId };
+    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/trash/${fileId}/restore`, body);
   }
 
   async emptyKDriveTrash(driveId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/trash`);
   }
 
   async listKDriveFileVersions(driveId: number, fileId: number): Promise<ApiResponse<KDriveFileVersion[]>> {
-    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/2/drive/${driveId}/files/${fileId}/versions`);
+    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/3/drive/${driveId}/files/${fileId}/versions`);
   }
 
-  async getKDriveActivity(driveId: number, fileId?: number): Promise<ApiResponse<KDriveActivity[]>> {
-    const path = fileId
-      ? `/2/drive/${driveId}/files/${fileId}/activity`
-      : `/2/drive/${driveId}/activity`;
-    return this.request<ApiResponse<KDriveActivity[]>>('GET', path);
+  async getKDriveActivity(driveId: number, fileId?: number, lang: KDriveLang = 'en'): Promise<ApiResponse<KDriveActivity[]>> {
+    if (fileId) {
+      return this.request<ApiResponse<KDriveActivity[]>>('GET', `/3/drive/${driveId}/files/${fileId}/activities`);
+    }
+    // The drive-wide feed answers 422 "The lang field is required" without it.
+    return this.request<ApiResponse<KDriveActivity[]>>('GET', `/3/drive/${driveId}/activities`, undefined, { lang });
   }
 
   async listKDriveFavorites(driveId: number): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/favorites`);
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/favorites`);
   }
 
   async addKDriveFavorite(driveId: number, fileId: number): Promise<ApiResponse<void>> {
@@ -717,6 +910,48 @@ export class InfomaniakClient {
 
   async removeKDriveFavorite(driveId: number, fileId: number): Promise<ApiResponse<void>> {
     return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/${fileId}/favorite`);
+  }
+
+  /**
+   * Download a file's raw bytes. Refuses before reading the body when the
+   * server announces a larger size, and again after reading as a backstop.
+   */
+  async downloadKDriveFile(driveId: number, fileId: number, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const response = await this.rawRequest('GET', `/2/drive/${driveId}/files/${fileId}/download`);
+    const announced = Number(response.headers.get('content-length') ?? '0');
+    if (announced > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`File too large to return (${announced} bytes, max ${maxBytes})`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(`File too large to return (${bytes.byteLength} bytes, max ${maxBytes})`);
+    }
+    return { bytes, contentType: response.headers.get('content-type') ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Upload a file in one request (/3/drive/{id}/upload, as used by Infomaniak's
+   * official kDrive MCP server). `conflict` decides what happens when a file
+   * with the same name exists: `error`, `rename` (keep both) or `version`
+   * (replace and keep the old content as a version).
+   */
+  async uploadKDriveFile(
+    driveId: number,
+    upload: { directoryId: number; fileName: string; content: Uint8Array; conflict: 'error' | 'rename' | 'version' },
+  ): Promise<ApiResponse<KDriveFile>> {
+    const response = await this.rawRequest(
+      'POST',
+      `/3/drive/${driveId}/upload`,
+      {
+        directory_id: upload.directoryId,
+        file_name: upload.fileName,
+        total_size: upload.content.byteLength,
+        conflict: upload.conflict,
+      },
+      { body: upload.content, contentType: 'application/octet-stream' },
+    );
+    return (await response.json()) as ApiResponse<KDriveFile>;
   }
 
   // Swiss Backup

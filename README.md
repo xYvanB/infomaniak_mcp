@@ -1,8 +1,6 @@
 # Infomaniak MCP Server
 
-[![npm version](https://badge.fury.io/js/infomaniak-mcp-server.svg)](https://www.npmjs.com/package/infomaniak-mcp-server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/YOUR_USERNAME/infomaniak-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/infomaniak-mcp-server/actions/workflows/ci.yml)
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for interacting with the [Infomaniak API](https://developer.infomaniak.com/). This server enables AI assistants like Claude to manage Infomaniak services including domains, email, web hosting, kDrive, and more.
 
@@ -48,20 +46,17 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for in
 
 ## 📦 Installation
 
-### Using npm (recommended)
+The server is not published on npm yet (`npm install -g infomaniak-mcp-server`
+finds nothing), so it is built from source:
 
 ```bash
-npm install -g infomaniak-mcp-server
-```
-
-### From source
-
-```bash
-git clone https://github.com/YOUR_USERNAME/infomaniak-mcp-server.git
-cd infomaniak-mcp-server
-npm install
+git clone https://github.com/daniviber/infomaniak_mcp.git
+cd infomaniak_mcp
+npm ci
 npm run build
 ```
+
+The entry point is `build/index.js`.
 
 ## ⚙️ Configuration
 
@@ -79,24 +74,8 @@ Add to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "infomaniak": {
-      "command": "npx",
-      "args": ["-y", "infomaniak-mcp-server"],
-      "env": {
-        "INFOMANIAK_API_TOKEN": "your-api-token-here"
-      }
-    }
-  }
-}
-```
-
-Or if installed globally or from source:
-
-```json
-{
-  "mcpServers": {
-    "infomaniak": {
       "command": "node",
-      "args": ["/path/to/infomaniak-mcp-server/build/index.js"],
+      "args": ["/path/to/infomaniak_mcp/build/index.js"],
       "env": {
         "INFOMANIAK_API_TOKEN": "your-api-token-here"
       }
@@ -112,7 +91,39 @@ Or if installed globally or from source:
 | `INFOMANIAK_API_TOKEN` | Yes | - | Your Infomaniak API token |
 | `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `http` |
 | `MCP_PORT` | No | `3000` | HTTP server port (when using `http` transport) |
+| `MCP_HOST` | No | `127.0.0.1` | HTTP host to bind to. A non-loopback host (e.g. `0.0.0.0`) requires `MCP_AUTH_TOKEN` |
+| `MCP_AUTH_TOKEN` | No* | - | Bearer token required on all `/mcp` routes. *Required when `MCP_HOST` is not a loopback address |
+| `MCP_CORS_ORIGINS` | No | - | Comma-separated list of origins allowed by CORS (e.g. `https://app.example.com`). CORS is disabled when unset. `*` requires `MCP_AUTH_TOKEN` |
 | `MCP_STATELESS` | No | `false` | Set to `true` for stateless mode |
+| `INFOMANIAK_READ_ONLY` | No | `false` | Set to `true` to offer and allow read-only tools only (see Safety) |
+| `INFOMANIAK_IMAP_USER` | No | - | Mailbox address to read over IMAP; without it the mail-reading tools are not offered |
+| `INFOMANIAK_IMAP_PASSWORD` | With a user | - | Its password (an app password if two-factor authentication is on) |
+| `INFOMANIAK_IMAP_PASSWORD_FILE` | Instead of the above | - | A file holding the password, so it does not sit in the MCP client's configuration |
+| `INFOMANIAK_IMAP_HOST` / `INFOMANIAK_IMAP_PORT` | No | `mail.infomaniak.com` / `993` | IMAP server; the connection is always TLS |
+
+## 🛡️ Safety
+
+Every tool carries MCP annotations: `readOnlyHint` for reads (`list_*`, `get_*`,
+`search_*`, `ping`), `destructiveHint` for what deletes, empties, reboots or
+shuts down, and for `infomaniak_api_call`, which can do anything the token can.
+Clients that honour annotations can ask before a destructive call.
+
+With `INFOMANIAK_READ_ONLY=true` the server **offers only the read-only tools**
+and refuses any other call, `infomaniak_api_call` included, with a message that
+names the variable. Start there when you connect an assistant to an account
+whose mail or DNS you care about, and lift it on purpose:
+
+```json
+{
+  "mcpServers": {
+    "infomaniak": {
+      "command": "node",
+      "args": ["/path/to/infomaniak-mcp-server/build/index.js"],
+      "env": { "INFOMANIAK_API_TOKEN": "your-api-token-here", "INFOMANIAK_READ_ONLY": "true" }
+    }
+  }
+}
+```
 
 ## 🌐 HTTP Transport
 
@@ -121,11 +132,22 @@ The server supports HTTP transport with SSE streaming, enabling web-based MCP cl
 ### Starting in HTTP Mode
 
 ```bash
-# Using npx
-MCP_TRANSPORT=http MCP_PORT=3000 INFOMANIAK_API_TOKEN=your-token npx infomaniak-mcp-server
-
-# From source
+# Listens on 127.0.0.1 only; set MCP_HOST and MCP_AUTH_TOKEN to expose it
 MCP_TRANSPORT=http MCP_PORT=3000 INFOMANIAK_API_TOKEN=your-token node build/index.js
+```
+
+### Security
+
+The HTTP server can act on your Infomaniak account with the server's API token, so access to it must be restricted:
+
+- By default it listens on `127.0.0.1` only. Requests whose `Host` header is not `localhost`, `127.0.0.1` or `[::1]` are rejected, to protect against DNS rebinding.
+- To listen on another interface (e.g. `MCP_HOST=0.0.0.0` in a container or on a cloud platform), set `MCP_AUTH_TOKEN`. The server refuses to start on a non-loopback host without it. Clients must then send `Authorization: Bearer <token>` on every `/mcp` request. Use a long random value, e.g. `openssl rand -hex 32`, and serve the endpoint over HTTPS.
+- CORS is disabled by default. Set `MCP_CORS_ORIGINS` to the origins of the browser-based clients you use.
+
+```bash
+# Remote / cloud deployment
+MCP_TRANSPORT=http MCP_HOST=0.0.0.0 MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  INFOMANIAK_API_TOKEN=your-token npx infomaniak-mcp-server
 ```
 
 ### HTTP Endpoints
@@ -136,7 +158,9 @@ MCP_TRANSPORT=http MCP_PORT=3000 INFOMANIAK_API_TOKEN=your-token node build/inde
 | `/mcp` | POST | Send JSON-RPC messages (initialize, tool calls, etc.) |
 | `/mcp` | GET | Open SSE stream for server-to-client notifications |
 | `/mcp` | DELETE | Terminate a session |
-| `/mcp/sessions` | GET | List active sessions (for debugging) |
+| `/mcp/sessions` | GET | Number of active sessions (for monitoring) |
+
+All `/mcp` routes require the bearer token when `MCP_AUTH_TOKEN` is set. `/health` does not.
 
 ### Session Modes
 
@@ -148,28 +172,37 @@ MCP_TRANSPORT=http MCP_PORT=3000 INFOMANIAK_API_TOKEN=your-token node build/inde
 ```dockerfile
 FROM node:20-alpine
 WORKDIR /app
-RUN npm install -g infomaniak-mcp-server
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
+RUN npm ci && npm run build && npm prune --omit=dev
 ENV MCP_TRANSPORT=http
 ENV MCP_PORT=3000
+ENV MCP_HOST=0.0.0.0
 EXPOSE 3000
-CMD ["infomaniak-mcp-server"]
+CMD ["node", "build/index.js"]
 ```
 
 ```bash
 # Build and run
 docker build -t infomaniak-mcp .
-docker run -p 3000:3000 -e INFOMANIAK_API_TOKEN=your-token infomaniak-mcp
+docker run -p 127.0.0.1:3000:3000 \
+  -e INFOMANIAK_API_TOKEN=your-token \
+  -e MCP_AUTH_TOKEN=your-long-random-token \
+  infomaniak-mcp
 ```
 
 ### Connecting from Web Clients
 
 ```javascript
 // Step 1: Initialize session
+// The page's origin must be listed in MCP_CORS_ORIGINS.
+// The Authorization header is only needed when MCP_AUTH_TOKEN is set.
 const initResponse = await fetch('http://localhost:3000/mcp', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
-    'Accept': 'application/json, text/event-stream'
+    'Accept': 'application/json, text/event-stream',
+    'Authorization': 'Bearer your-long-random-token'
   },
   body: JSON.stringify({
     jsonrpc: '2.0',
@@ -186,6 +219,7 @@ const response = await fetch('http://localhost:3000/mcp', {
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/event-stream',
+    'Authorization': 'Bearer your-long-random-token',
     'Mcp-Session-Id': sessionId
   },
   body: JSON.stringify({
@@ -221,17 +255,36 @@ const response = await fetch('http://localhost:3000/mcp', {
 
 ### Email Services
 
+A mail service is a *mail hosting*; a mailbox is addressed by its **name** (the part
+before the `@`), which is how the Infomaniak API identifies it. Routes follow the
+published OpenAPI document (`/1/mail_hostings/{mail_hosting_id}/mailboxes/{mailbox_name}/…`)
+and were checked live on 2026-10-10.
+
 | Tool | Description |
 |------|-------------|
-| `infomaniak_list_mail_services` | List mail services |
-| `infomaniak_get_mail_service` | Get mail service details |
-| `infomaniak_list_mailboxes` | List mailboxes |
-| `infomaniak_get_mailbox` | Get mailbox details |
-| `infomaniak_create_mailbox` | Create new mailbox |
-| `infomaniak_update_mailbox` | Update mailbox |
-| `infomaniak_delete_mailbox` | Delete mailbox |
-| `infomaniak_add_mailbox_alias` | Add email alias |
-| `infomaniak_delete_mailbox_alias` | Remove email alias |
+| `infomaniak_list_mail_hostings` | List mail hostings (mail services), optionally for one account |
+| `infomaniak_list_mailboxes` | List mailboxes of a hosting (search, pagination) |
+| `infomaniak_get_mailbox` | Get a mailbox by name |
+| `infomaniak_create_mailbox` | Create a mailbox (the password is set by its user in the Manager) |
+| `infomaniak_update_mailbox` | Note, auto-responder on/off, spam handling, filtering, senders lists |
+| `infomaniak_delete_mailbox` | Delete a mailbox |
+| `infomaniak_list_mailbox_aliases` / `infomaniak_add_mailbox_alias` / `infomaniak_delete_mailbox_alias` | Aliases of a mailbox |
+| `infomaniak_get_mailbox_forwarding` / `infomaniak_add_mailbox_forwarding` / `infomaniak_update_mailbox_forwarding` / `infomaniak_delete_mailbox_forwarding` | Forwarding addresses of a mailbox |
+| `infomaniak_list_email_redirections` / `infomaniak_create_email_redirection` / `infomaniak_delete_email_redirection` | Redirections of the hosting (addresses without a mailbox) |
+| `infomaniak_list_auto_replies` / `infomaniak_create_auto_reply` / `infomaniak_update_auto_reply` / `infomaniak_delete_auto_reply` | Auto-replies (out of office) of the hosting |
+| `infomaniak_list_mailbox_folders` | IMAP folders of a mailbox and their roles |
+
+### Reading Mail (IMAP, read-only)
+
+The API manages mailboxes but does not return the messages in them; these tools read them over IMAP. They are listed only when `INFOMANIAK_IMAP_USER` is set. Folders are opened with `EXAMINE` and bodies fetched with `BODY.PEEK`, so nothing is marked as read and no flag changes; each call opens its own connection and logs out.
+
+| Tool | Description |
+|------|-------------|
+| `infomaniak_list_mail_folders` | Folders of the mailbox, each with its role (inbox, sent, drafts, trash, junk, archive) |
+| `infomaniak_search_mail_messages` | Search by sender, recipient, subject, body words and dates; newest first, at most 50 |
+| `infomaniak_get_mail_message` | One message by uid: headers, text (HTML turned into text), attachments listed without their content |
+
+Message content is written by other people, and the tools say so in their output: a client should treat it as data, not instructions.
 
 ### Web Hosting
 
@@ -258,6 +311,25 @@ const response = await fetch('http://localhost:3000/mcp', {
 | `infomaniak_list_swiss_backups` | List Swiss Backups |
 | `infomaniak_get_swiss_backup` | Get backup details |
 | `infomaniak_list_swiss_backup_slots` | List backup slots |
+
+### kDrive Files
+
+The kDrive routes follow Infomaniak's official kDrive MCP server and the published OpenAPI document. The root directory has id `1`.
+
+| Tool | Description |
+|------|-------------|
+| `infomaniak_list_kdrive_files` | List a directory (root by default); paginated with `cursor`/`limit`, filter with `type` (`file` or `dir`) |
+| `infomaniak_get_kdrive_file` | File or directory details |
+| `infomaniak_search_kdrive_files` | Search, optionally inside `directory_id` (`depth`: `unlimited` or `child`) |
+| `infomaniak_download_kdrive_file` | Read a file: text as text (50 000 chars by default, `max_chars` up to 200 000), other files up to 10 MB as an image or embedded resource |
+| `infomaniak_upload_kdrive_file` | Upload text (`content_text`) or base64 (`content_base64`), max 10 MB; `conflict`: `error`, `rename` (default) or `version` |
+| `infomaniak_create_kdrive_directory` | Create a directory |
+| `infomaniak_move_kdrive_file` / `infomaniak_copy_kdrive_file` / `infomaniak_rename_kdrive_file` | Move, copy, rename |
+| `infomaniak_delete_kdrive_file` | Delete a file or directory |
+| `infomaniak_share_kdrive_file` | Create a share link |
+| `infomaniak_list_kdrive_trash` / `infomaniak_restore_kdrive_file` / `infomaniak_empty_kdrive_trash` | Trash |
+| `infomaniak_list_kdrive_file_versions` / `infomaniak_get_kdrive_activity` | Versions and activity |
+| `infomaniak_list_kdrive_favorites` / `infomaniak_add_kdrive_favorite` / `infomaniak_remove_kdrive_favorite` | Favorites |
 
 ### Infrastructure
 
@@ -303,7 +375,8 @@ const response = await fetch('http://localhost:3000/mcp', {
 
 ### Create a Mailbox
 ```
-"Create a new email address info@mydomain.com with password SecurePass123"
+"Create the mailbox info on mail hosting 12345"
+"List the aliases of the mailbox info on hosting 12345"
 ```
 
 ### Check Infrastructure
@@ -322,9 +395,9 @@ const response = await fetch('http://localhost:3000/mcp', {
 ### Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/infomaniak-mcp-server.git
-cd infomaniak-mcp-server
-npm install
+git clone https://github.com/daniviber/infomaniak_mcp.git
+cd infomaniak_mcp
+npm ci
 ```
 
 ### Build
