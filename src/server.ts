@@ -1114,9 +1114,9 @@ export const toolDefinitions: Tool[] = [
 
 type Ctx = { client: InfomaniakClient };
 
-const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, ctx: Ctx) => Promise<unknown>) =>
+const on = <S extends z.ZodType>(schema: S, run: (input: z.output<S>, ctx: Ctx) => Promise<unknown>) =>
   handler(schema, run);
-const onKChat = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, kchat: KChatClient) => Promise<unknown>) =>
+const onKChat = <S extends z.ZodType>(schema: S, run: (input: z.output<S>, kchat: KChatClient) => Promise<unknown>) =>
   handler(schema, run);
 
 /** Each Infomaniak API tool's input schema and what it does with the validated input. */
@@ -1275,9 +1275,9 @@ const kchatHandlers: Record<string, ToolHandler<KChatClient>> = {
 };
 
 /** The input schema of every tool this server has, by name. */
-export const inputSchemas: ReadonlyMap<string, z.ZodTypeAny> = new Map(
+export const inputSchemas: ReadonlyMap<string, z.ZodType> = new Map(
   [mailHandlers, apiHandlers, kchatHandlers, imapHandlers].flatMap((group) =>
-    Object.entries(group).map(([name, h]) => [name, h.schema] as [string, z.ZodTypeAny])),
+    Object.entries(group).map(([name, h]) => [name, h.schema] as [string, z.ZodType])),
 );
 
 /** A tool's definition with its input schema derived from the zod schema that validates it. */

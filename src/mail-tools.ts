@@ -12,7 +12,7 @@
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { InfomaniakClient } from "./infomaniak-client.js";
-import { handler, id, input, notOnlyDots, ToolHandler, validate } from "./schemas.js";
+import { handler, id, req, input, notOnlyDots, ToolHandler, validate } from "./schemas.js";
 
 // ── schemas ──────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,7 @@ const mailHostingId = id("mail_hosting_id");
 // The username part of an address: no "@", no "/", and not "." or "..",
 // nothing that would leave the path segment it is sent in.
 const mailboxName = z
-  .string({ required_error: "mailbox_name is required" })
+  .string(req("mailbox_name is required"))
   .min(1, "mailbox_name cannot be empty")
   .max(64, "mailbox_name is at most 64 characters")
   .regex(/^[A-Za-z0-9._+-]+$/, "mailbox_name is the part before the @ (letters, digits, . _ + -)")
@@ -68,7 +68,7 @@ export const MailboxAliasSchema = input({
   mail_hosting_id: mailHostingId,
   mailbox_name: mailboxName,
   alias: z
-    .string({ required_error: "alias is required" })
+    .string(req("alias is required"))
     .min(1, "alias cannot be empty")
     .max(64, "alias is at most 64 characters")
     .regex(/^[A-Za-z0-9._+-]+$/, "alias is the part before the @ (letters, digits, . _ + -)")
@@ -92,13 +92,13 @@ export const UpdateMailboxForwardingSchema = input({
 
 export const CreateRedirectionSchema = input({
   mail_hosting_id: mailHostingId,
-  name: z.string({ required_error: "name is required" }).min(1),
+  name: z.string(req("name is required")).min(1),
   targets: z.array(email.max(255)).min(1, "at least one target address is required"),
 });
 
 export const RedirectionIdSchema = input({
   mail_hosting_id: mailHostingId,
-  redirection_id: z.string({ required_error: "redirection_id is required" }).min(1).refine(notOnlyDots, "redirection_id cannot be only dots"),
+  redirection_id: z.string(req("redirection_id is required")).min(1).refine(notOnlyDots, "redirection_id cannot be only dots"),
 });
 
 const autoReplyFields = {
@@ -113,8 +113,8 @@ const autoReplyFields = {
 
 export const CreateAutoReplySchema = input({
   mail_hosting_id: mailHostingId,
-  name: z.string({ required_error: "name is required" }).min(1),
-  message: z.string({ required_error: "message is required" }).min(1).max(65536),
+  name: z.string(req("name is required")).min(1),
+  message: z.string(req("message is required")).min(1).max(65536),
   is_recurrent: z.boolean().default(false),
   started_at: autoReplyFields.started_at,
   ended_at: autoReplyFields.ended_at,
@@ -352,7 +352,7 @@ function withoutUndefined<T extends Record<string, unknown>>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
-const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, client: InfomaniakClient) => Promise<unknown>) =>
+const on = <S extends z.ZodType>(schema: S, run: (input: z.output<S>, client: InfomaniakClient) => Promise<unknown>) =>
   handler(schema, run);
 
 /** Each mail tool's input schema and what it does with the validated input. */

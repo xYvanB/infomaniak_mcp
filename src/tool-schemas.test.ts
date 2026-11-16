@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { toolDefinitions, tools, annotatedTools, annotatedImapTools, inputSchemas } from "./server.js";
 import { mailTools, MailboxAliasSchema, MailboxNameSchema, RedirectionIdSchema } from "./mail-tools.js";
@@ -38,7 +38,7 @@ describe("every tool", () => {
   });
 
   it.each(defined.map((t) => [t.name, t] as const))("%s: its definition says what its zod schema accepts", (name, tool) => {
-    const zod = zodToJsonSchema(inputSchemas.get(name)!, { $refStrategy: "none" }) as JsonObject;
+    const zod = z.toJSONSchema(inputSchemas.get(name)!, { io: "input", unrepresentable: "any" }) as JsonObject;
     const doc = tool.inputSchema as JsonObject;
     const zodProps = zod.properties ?? {};
     const docProps = doc.properties ?? {};

@@ -24,7 +24,7 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ImapFlow } from "imapflow";
 import PostalMime from "postal-mime";
 import { z } from "zod";
-import { handler, input, NoInputSchema, ToolHandler, validate } from "./schemas.js";
+import { handler, input, req, NoInputSchema, ToolHandler, validate } from "./schemas.js";
 
 export interface ImapConfig {
   host: string;
@@ -80,7 +80,7 @@ export const SearchMailMessagesSchema = input({
 
 export const GetMailMessageSchema = input({
   folder,
-  uid: z.number({ required_error: "uid is required" }).int().positive(),
+  uid: z.number(req("uid is required")).int().positive(),
   max_chars: z.number().int().min(1).max(100_000).optional(),
 });
 
@@ -306,7 +306,7 @@ export class ImapReader {
   }
 }
 
-const on = <S extends z.ZodTypeAny>(schema: S, run: (input: z.output<S>, reader: ImapReader) => Promise<unknown>) =>
+const on = <S extends z.ZodType>(schema: S, run: (input: z.output<S>, reader: ImapReader) => Promise<unknown>) =>
   handler(schema, run);
 
 /** Each IMAP tool's input schema and what it does with the validated input. */
