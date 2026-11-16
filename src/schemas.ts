@@ -11,16 +11,20 @@
  */
 
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { KDRIVE_LANGS } from './infomaniak-client.js';
 
 /** A tool's input: an object that refuses keys it does not declare. */
-export const input = <T extends z.ZodRawShape>(shape: T) => z.object(shape).strict();
+export const input = <T extends z.ZodRawShape>(shape: T) => z.strictObject(shape);
+
+/** Zod 4 error option: this message when the key is missing, zod's own for any other mistake. */
+export const req = (message: string) => ({
+  error: (issue: { input?: unknown }) => (issue.input === undefined ? message : undefined),
+});
 
 /** A positive integer id, as every Infomaniak id in a path is. */
 export const id = (name: string) =>
-  z.number({ required_error: `${name} is required`, invalid_type_error: `${name} must be a number` })
+  z.number({ error: (issue) => (issue.input === undefined ? `${name} is required` : `${name} must be a number`) })
     .int(`${name} must be an integer`)
     .positive(`${name} must be positive`);
 
@@ -33,7 +37,7 @@ const DOMAIN_NAME = /^[\p{L}\p{M}\p{N}-]+(\.[\p{L}\p{M}\p{N}-]+)+$/u;
 // A refinement rather than .regex(): a JSON Schema pattern has no `u` flag, so
 // it could not carry the Unicode classes that let IDN labels through.
 export const domainName = z
-  .string({ required_error: 'domain is required' })
+  .string(req('domain is required'))
   .min(1, 'domain cannot be empty')
   .max(253, 'domain is at most 253 characters')
   .refine((name) => DOMAIN_NAME.test(name), 'domain must be a domain name such as example.com');
@@ -46,7 +50,7 @@ export const notOnlyDots = (value: string): boolean => !/^\.+$/.test(value);
 
 /** A kChat (Mattermost) id: letters and digits only. */
 const kchatId = (name: string) =>
-  z.string({ required_error: `${name} is required` })
+  z.string(req(`${name} is required`))
     .min(1, `${name} cannot be empty`)
     .regex(/^[A-Za-z0-9]+$/, `${name} is a kChat id (letters and digits)`);
 
@@ -72,9 +76,9 @@ export const ListDnsRecordsSchema = DomainNameSchema;
 
 export const CreateDnsRecordSchema = input({
   domain: domainName,
-  source: z.string({ required_error: 'source is required' }),
+  source: z.string(req('source is required')),
   type: DnsRecordTypeSchema,
-  target: z.string({ required_error: 'target is required' }).min(1, 'target cannot be empty'),
+  target: z.string(req('target is required')).min(1, 'target cannot be empty'),
   ttl: z.number().int().min(60).max(86400).optional(),
   priority: z.number().int().min(0).max(65535).optional(),
 });
@@ -151,7 +155,7 @@ export const DatabaseIdSchema = input({
 
 export const CreateDatabaseSchema = input({
   hosting_id: id('hosting_id'),
-  name: z.string({ required_error: 'name is required' }).min(1, 'database name cannot be empty'),
+  name: z.string(req('name is required')).min(1, 'database name cannot be empty'),
   charset: z.string().optional(),
 });
 
@@ -193,15 +197,15 @@ export const InvoiceIdSchema = input({
 // would resolve to another route than the one shown), are refused.
 export const ApiCallSchema = input({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
-  endpoint: z.string({ required_error: 'endpoint is required' })
+  endpoint: z.string(req('endpoint is required'))
     .startsWith('/', 'endpoint must start with /')
     .regex(/^\/[^?#\s\\]*$/, 'endpoint is a path without query, fragment, spaces or backslashes; put parameters in query_params')
     .refine(
       (path) => path.split('/').every((s) => notOnlyDots(s.replace(/%2e/gi, '.'))),
       'endpoint must not contain "." or ".." segments',
     ),
-  body: z.record(z.unknown()).optional(),
-  query_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  body: z.record(z.string(), z.unknown()).optional(),
+  query_params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 // Domain extras
@@ -228,8 +232,8 @@ export const CronJobIdSchema = input({
 
 export const CreateCronJobSchema = input({
   hosting_id: id('hosting_id'),
-  command: z.string({ required_error: 'command is required' }).min(1),
-  schedule: z.string({ required_error: 'schedule is required' }).min(1),
+  command: z.string(req('command is required')).min(1),
+  schedule: z.string(req('schedule is required')).min(1),
   description: z.string().optional(),
 });
 
@@ -249,8 +253,8 @@ export const FtpAccountIdSchema = input({
 
 export const CreateFtpAccountSchema = input({
   hosting_id: id('hosting_id'),
-  login: z.string({ required_error: 'login is required' }).min(1),
-  password: z.string({ required_error: 'password is required' }).min(8),
+  login: z.string(req('login is required')).min(1),
+  password: z.string(req('password is required')).min(8),
   home_directory: z.string().optional(),
 });
 
@@ -281,7 +285,7 @@ export const ListKDriveFilesSchema = input({
 
 export const SearchKDriveFilesSchema = input({
   drive_id: id('drive_id'),
-  query: z.string({ required_error: 'query is required' }).min(1),
+  query: z.string(req('query is required')).min(1),
   directory_id: id('directory_id').optional(),
   depth: z.enum(['unlimited', 'child']).optional(),
   limit: kdriveLimit.optional(),
@@ -289,7 +293,7 @@ export const SearchKDriveFilesSchema = input({
 
 export const CreateKDriveDirectorySchema = input({
   drive_id: id('drive_id'),
-  name: z.string({ required_error: 'name is required' }).min(1),
+  name: z.string(req('name is required')).min(1),
   parent_id: id('parent_id').optional(),
 });
 
@@ -302,7 +306,7 @@ export const MoveOrCopyKDriveFileSchema = input({
 export const RenameKDriveFileSchema = input({
   drive_id: id('drive_id'),
   file_id: id('file_id'),
-  name: z.string({ required_error: 'name is required' }).min(1),
+  name: z.string(req('name is required')).min(1),
 });
 
 // The link endpoint requires `right` (public or password) and takes
@@ -344,7 +348,7 @@ export const DownloadKDriveFileSchema = input({
 export const UploadKDriveFileSchema = input({
   drive_id: id('drive_id'),
   directory_id: id('directory_id').optional(),
-  file_name: z.string({ required_error: 'file_name is required' })
+  file_name: z.string(req('file_name is required'))
     .min(1)
     .max(255)
     .refine((name) => !name.includes('/'), 'file_name must not contain "/"'),
@@ -371,13 +375,13 @@ export const KChatPostIdSchema = input({
 
 export const CreateKChatPostSchema = input({
   channel_id: kchatId('channel_id'),
-  message: z.string({ required_error: 'message is required' }).min(1),
+  message: z.string(req('message is required')).min(1),
   root_id: kchatId('root_id').optional(),
 });
 
 export const SearchKChatPostsSchema = input({
   team_id: kchatId('team_id'),
-  terms: z.string({ required_error: 'terms is required' }).min(1),
+  terms: z.string(req('terms is required')).min(1),
   is_or_search: z.boolean().optional(),
 });
 
@@ -388,7 +392,7 @@ export const CreateKChatDirectChannelSchema = input({
 });
 
 export const SearchKChatUsersSchema = input({
-  term: z.string({ required_error: 'term is required' }).min(1),
+  term: z.string(req('term is required')).min(1),
 });
 
 export const ListKChatUsersSchema = input({
@@ -403,10 +407,10 @@ export const KChatGetChannelPostsSchema = input({
 });
 
 // Helper function to validate and return typed result
-export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
+export function validate<S extends z.ZodType>(schema: S, data: unknown): z.output<S> {
   const result = schema.safeParse(data);
   if (!result.success) {
-    const errors = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = result.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new Error(`Validation error: ${errors}`);
   }
   return result.data;
@@ -417,8 +421,8 @@ export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.ou
  * from the zod schema that validates the call, so the two cannot disagree;
  * the descriptions come from the tool's definition.
  */
-export function toInputSchema(schema: z.ZodTypeAny, defined: Tool['inputSchema']): Tool['inputSchema'] {
-  const { $schema: _draft, ...json } = zodToJsonSchema(schema, { $refStrategy: 'none' }) as {
+export function toInputSchema(schema: z.ZodType, defined: Tool['inputSchema']): Tool['inputSchema'] {
+  const { $schema: _draft, ...json } = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as {
     $schema?: string;
     properties?: Record<string, Record<string, unknown>>;
     [key: string]: unknown;
@@ -435,12 +439,12 @@ export function toInputSchema(schema: z.ZodTypeAny, defined: Tool['inputSchema']
 
 /** A tool's input schema, and what the tool does with the input once validated. */
 export interface ToolHandler<Ctx> {
-  schema: z.ZodTypeAny;
-  run(input: z.output<z.ZodTypeAny>, ctx: Ctx): Promise<unknown>;
+  schema: z.ZodType;
+  run(input: z.output<z.ZodType>, ctx: Ctx): Promise<unknown>;
 }
 
 /** Pairs a schema with its handler, which then receives the validated, typed input. */
-export function handler<Ctx, S extends z.ZodTypeAny>(
+export function handler<Ctx, S extends z.ZodType>(
   schema: S,
   run: (input: z.output<S>, ctx: Ctx) => Promise<unknown>,
 ): ToolHandler<Ctx> {
