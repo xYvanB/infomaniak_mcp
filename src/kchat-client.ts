@@ -9,6 +9,8 @@
 export interface KChatConfig {
   readonly host: string;
   readonly token: string;
+  /** Request timeout in ms (default: 30000) */
+  readonly timeoutMs?: number;
 }
 
 export interface KChatTeam {
@@ -64,10 +66,12 @@ const seg = (value: string): string => {
 export class KChatClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly timeoutMs: number;
 
   constructor(config: KChatConfig) {
     this.baseUrl = `https://${config.host}/api/v4`;
     this.token = config.token;
+    this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
   private async request<T>(
@@ -104,6 +108,8 @@ export class KChatClient {
       options.body = JSON.stringify(body);
     }
 
+    options.signal = AbortSignal.timeout(this.timeoutMs);
+
     const response = await fetch(url, options);
 
     if (!response.ok) {
@@ -133,7 +139,8 @@ export class KChatClient {
   }
 
   async searchUsers(term: string): Promise<KChatUser[]> {
-    return this.request<KChatUser[]>("GET", "/users/search", undefined, { term });
+    // Mattermost's /users/search only accepts POST, with the term in the body
+    return this.request<KChatUser[]>("POST", "/users/search", { term });
   }
 
   async listUsers(params?: {
