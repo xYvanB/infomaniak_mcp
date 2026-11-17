@@ -138,22 +138,103 @@ export const IMAP_TOOL_NAMES: ReadonlySet<string> = new Set(imapTools.map((t) =>
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", agrave: "à", egrave: "è", eacute: "é", igrave: "ì", ograve: "ò", ugrave: "ù" };
 
-/** Readable text from HTML: no scripts or styles, line breaks where blocks end, links with their target. */
+const HIDDEN = new Set(["script", "style", "head"]);
+const TAG_NAME = /^(\/?)([a-z][a-z0-9]*)/;
+const LINE_BREAK = /^br\s*\/?$/;
+const BLOCK_END = /^\/(p|div|li|tr|h[1-6]|table|blockquote)\s*$/;
+const LINK_TARGET = /\bhref\s*=\s*["']([^"']*)["']/i;
+
+/**
+ * Readable text from HTML: no scripts, styles or comments, line breaks where blocks end,
+ * links with their target.
+ *
+ * The HTML comes from whoever can send mail to the mailbox, so this walks it once with
+ * indexOf and only runs patterns anchored inside a single tag: no pattern scans the rest
+ * of the input from many starting points, and the time grows linearly with any input.
+ * A script, style, head or comment that is never closed hides the rest, as in a browser.
+ */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|head)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a\s*>/gi, (_m, href: string, label: string) => `${label} (${href})`)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6]|table|blockquote)\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
-      if (e[0] === "#") return String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : Number(e.slice(1)));
-      return ENTITIES[e.toLowerCase()] ?? m;
-    })
-    .replace(/[ \t]+\n/g, "\n")
+  // Lower case on ASCII letters only, so every index stays in step with html.
+  const lower = html.replace(/[A-Z]+/g, (s) => s.toLowerCase());
+  const out: string[] = [];
+  let link: string | null = null;
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end < 0) break;
+      i = end + 3;
+      continue;
+    }
+    const gt = html.indexOf(">", lt + 1);
+    if (gt < 0) {
+      // No tag closes from here on: the rest is text.
+      out.push(html.slice(lt));
+      break;
+    }
+    if (gt === lt + 1) {
+      out.push("<");
+      i = gt;
+      continue;
+    }
+    const tag = lower.slice(lt + 1, gt);
+    i = gt + 1;
+    const name = TAG_NAME.exec(tag);
+    if (!name) continue;
+    const [, slash, element] = name;
+    if (!slash && HIDDEN.has(element)) {
+      const end = endOfClosingTag(lower, element, i);
+      if (end < 0) break;
+      i = end;
+    } else if (element === "a") {
+      if (slash) {
+        if (link !== null) out.push(` (${link})`);
+        link = null;
+      } else if (link === null) {
+        link = LINK_TARGET.exec(html.slice(lt + 1, gt))?.[1] ?? null;
+      }
+    } else if (LINE_BREAK.test(tag) || BLOCK_END.test(tag)) {
+      out.push("\n");
+    }
+  }
+  return out
+    .join("")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, decodeEntity)
+    .split("\n")
+    .map(withoutTrailingBlanks)
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** Index just past the `</element>` that closes a script, style or head, or -1. */
+function endOfClosingTag(lower: string, element: string, from: number): number {
+  const opener = `</${element}`;
+  for (let at = lower.indexOf(opener, from); at >= 0; at = lower.indexOf(opener, at + opener.length)) {
+    let k = at + opener.length;
+    while (k < lower.length && /\s/.test(lower[k])) k++;
+    if (lower[k] === ">") return k + 1;
+  }
+  return -1;
+}
+
+function decodeEntity(entity: string, body: string): string {
+  if (body[0] !== "#") return ENTITIES[body.toLowerCase()] ?? entity;
+  const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+  // Past U+10FFFF there is no character: keep the entity as it was written.
+  return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+}
+
+function withoutTrailingBlanks(line: string): string {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
+  return line.slice(0, end);
 }
 
 interface Address { name: string; address: string }
